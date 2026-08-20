@@ -7,48 +7,61 @@ struct Attack {
 }
 
 fn main() {
-    println!(
-        "====================
-      CYBERFEED
-===================="
-    );
+    println!("====================");
+    println!("      CYBERFEED");
+    println!("====================");
+
     attack_feed();
     println!("2. Exit");
 
-    // print a prompt in the terminal
-    print!("Select One Option:");
-    io::stdout().flush().expect("Selected:");
+    print!("Select One Option: ");
 
-    //Create mutable String buffer to hold the input
+    io::stdout().flush().expect("Failed to flush stdout");
+
     let mut input = String::new();
 
-    // Read the lines from the keyboard
     io::stdin()
         .read_line(&mut input)
         .expect("Failed to read line");
 
-    // Trim the invisible trailing newlines etc
     let trimmed_input = input.trim();
-    println!("You Choose Option {}", trimmed_input);
 
-    //user input choice
+    println!("You chose option {}", trimmed_input);
+    println!("-----------------------------");
+
+    // One Attack
+    let first_attack = Attack {
+        source_country: String::from("China"),
+        target_country: String::from("USA"),
+        attack_type: String::from("DDoS"),
+    };
+
+    let second_attack = Attack {
+        source_country: String::from("Russia"),
+        target_country: String::from("Germany"),
+        attack_type: String::from("Malware"),
+    };
+
+    // list of Attacks
+    let mut attacks: Vec<Attack> = Vec::new();
+
     if trimmed_input == "1" {
-        println!("More options:");
+        attacks.push(first_attack);
+        println!("Source: {}", attacks[0].source_country);
+        println!("Target: {}", attacks[0].target_country);
+        println!("Type: {}", attacks[0].attack_type);
+
+        println!("-----------------------------");
+
+        attacks.push(second_attack);
+        println!("Source: {}", attacks[1].source_country);
+        println!("Target: {}", attacks[1].target_country);
+        println!("Type: {}", attacks[1].attack_type);
     } else if trimmed_input == "2" {
         println!("Exit!");
     } else {
-        println!("Invalid Choice!!");
+        println!("Invalid Choice!");
     }
-
-    let attack_info = Attack {
-        source_country: String::from("China"),
-        target_country: String::from("USA"),
-        attack_type: String::from("DDOS"),
-    };
-
-    println!("Source: {}", attack_info.source_country);
-    println!("Target: {}", attack_info.target_country);
-    println!("Type: {}", attack_info.attack_type);
 }
 
 fn attack_feed() {
