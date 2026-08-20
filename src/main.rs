@@ -4,35 +4,68 @@ struct Attack {
     source_country: String,
     target_country: String,
     attack_type: String,
+    timestamp: String,
 }
 
 fn main() {
-    println!("====================");
-    println!("      CYBERFEED");
-    println!("====================");
+    let attacks: Vec<Attack> = get_attacks();
 
-    attack_feed();
-    println!("2. Exit");
+    loop {
+        println!("====================");
+        println!("      CYBERFEED");
+        println!("====================");
 
-    print!("Select One Option: ");
-    io::stdout().flush().expect("Failed to flush stdout");
+        attack_feed();
+        println!("2. Exit");
 
-    let mut input = String::new();
+        print!("Select One Option: ");
+        io::stdout().flush().expect("Failed to flush stdout");
 
-    io::stdin()
-        .read_line(&mut input)
-        .expect("Failed to read line");
+        let mut input = String::new();
 
-    let user_input = input.trim();
+        io::stdin()
+            .read_line(&mut input)
+            .expect("Failed to read line");
 
-    println!("You chose option {}", user_input);
-    println!("-----------------------------");
+        let user_input = input.trim();
 
+        println!("You chose option {}", user_input);
+        println!("-----------------------------");
+
+        // Handle user choice
+        if user_input == "1" {
+            // Go through every attack in the list
+            for attack in &attacks {
+                println!("Source: {}", attack.source_country);
+                println!("Target: {}", attack.target_country);
+                println!("Type: {}", attack.attack_type);
+                println!("Time: {}", attack.timestamp);
+                println!("-----------------------------");
+            }
+            println!("Press Enter to Continue");
+            io::stdin()
+                .read_line(&mut input)
+                .expect("Press Enter to Continue");
+        } else if user_input == "2" {
+            println!("Exit!");
+            break;
+        } else {
+            println!("Invalid Choice!");
+        }
+    }
+}
+
+fn attack_feed() {
+    println!("1. View attack feed");
+}
+
+fn get_attacks() -> Vec<Attack> {
     // Create first attack
     let first_attack = Attack {
         source_country: String::from("China"),
         target_country: String::from("USA"),
         attack_type: String::from("DDoS"),
+        timestamp: String::from("2026-08-20 22:15:32"),
     };
 
     // Create second attack
@@ -40,6 +73,7 @@ fn main() {
         source_country: String::from("Russia"),
         target_country: String::from("Germany"),
         attack_type: String::from("Malware"),
+        timestamp: String::from("2026-08-21 10:15:32"),
     };
 
     // Create empty list
@@ -48,23 +82,5 @@ fn main() {
     // Put both attacks into the list
     attacks.push(first_attack);
     attacks.push(second_attack);
-
-    // Handle user choice
-    if user_input == "1" {
-        // Go through every attack in the list
-        for attack in attacks {
-            println!("Source: {}", attack.source_country);
-            println!("Target: {}", attack.target_country);
-            println!("Type: {}", attack.attack_type);
-            println!("-----------------------------");
-        }
-    } else if user_input == "2" {
-        println!("Exit!");
-    } else {
-        println!("Invalid Choice!");
-    }
-}
-
-fn attack_feed() {
-    println!("1. View attack feed");
+    attacks
 }
