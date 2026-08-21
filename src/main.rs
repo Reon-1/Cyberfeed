@@ -16,7 +16,7 @@ enum Severity {
 
 fn main() {
     // Get all attacks when the program starts
-    let attacks: Vec<Attack> = get_attacks();
+    let attack_list: Vec<Attack> = load_attacks();
 
     loop {
         println!("====================");
@@ -46,14 +46,14 @@ fn main() {
 
         // Handle user choice
         if user_input == "1" {
-            // Get the length of the vector
-            let attack_len = attacks.len();
+            // Get the number of attacks in the list
+            let attack_count = attack_list.len();
 
-            println!("{} : Attacks Detected", attack_len);
+            println!("{} : Attacks Detected", attack_count);
             println!("-----------------------------");
 
             // Display every attack
-            display_all_attacks(&attacks);
+            display_all_attacks(&attack_list);
 
             println!("Press Enter to Continue");
 
@@ -62,9 +62,9 @@ fn main() {
                 .expect("Press Enter to Continue");
         } else if user_input == "2" {
             // Find and display only High severity attacks
-            let high_count = high_severity_attacks(&attacks);
+            let high_severity_count = display_high_severity_attacks(&attack_list);
 
-            println!("{} High Severity Attacks Detected", high_count);
+            println!("{} High Severity Attacks Detected", high_severity_count);
 
             println!("Press Enter to Continue");
 
@@ -89,9 +89,9 @@ fn attack_feed() {
     println!("3. Exit");
 }
 
-fn get_attacks() -> Vec<Attack> {
+fn load_attacks() -> Vec<Attack> {
     // Create first attack
-    let first_attack = Attack {
+    let attack_1 = Attack {
         source_country: String::from("China"),
         target_country: String::from("USA"),
         attack_type: String::from("DDoS"),
@@ -100,7 +100,7 @@ fn get_attacks() -> Vec<Attack> {
     };
 
     // Create second attack
-    let second_attack = Attack {
+    let attack_2 = Attack {
         source_country: String::from("Russia"),
         target_country: String::from("Germany"),
         attack_type: String::from("Malware"),
@@ -109,7 +109,7 @@ fn get_attacks() -> Vec<Attack> {
     };
 
     // Create third attack
-    let third_attack = Attack {
+    let attack_3 = Attack {
         source_country: String::from("North Korea"),
         target_country: String::from("Poland"),
         attack_type: String::from("Trojan"),
@@ -118,26 +118,26 @@ fn get_attacks() -> Vec<Attack> {
     };
 
     // Create an empty list of attacks
-    let mut attacks: Vec<Attack> = Vec::new();
+    let mut attack_list: Vec<Attack> = Vec::new();
 
     // Put the attacks into the list
-    attacks.push(first_attack);
-    attacks.push(second_attack);
-    attacks.push(third_attack);
+    attack_list.push(attack_1);
+    attack_list.push(attack_2);
+    attack_list.push(attack_3);
 
     // Return the completed list
-    attacks
+    attack_list
 }
 
-fn display_attack(attack: &Attack) {
+fn display_attack(current_attack: &Attack) {
     // Display information about one attack
-    println!("Source: {}", attack.source_country);
-    println!("Target: {}", attack.target_country);
-    println!("Type: {}", attack.attack_type);
-    println!("Time: {}", attack.timestamp);
+    println!("Source: {}", current_attack.source_country);
+    println!("Target: {}", current_attack.target_country);
+    println!("Type: {}", current_attack.attack_type);
+    println!("Time: {}", current_attack.timestamp);
 
     // Display the severity of the attack
-    match attack.severity {
+    match current_attack.severity {
         Severity::Low => println!("Severity: Low"),
         Severity::Medium => println!("Severity: Medium"),
         Severity::High => println!("Severity: High"),
@@ -146,35 +146,36 @@ fn display_attack(attack: &Attack) {
     println!("-----------------------------");
 }
 
-fn display_all_attacks(attacks: &Vec<Attack>) {
+fn display_all_attacks(attack_list: &Vec<Attack>) {
     // Go through every attack in the list
-    for attack in attacks {
+    for current_attack in attack_list {
         // Display the current attack
-        display_attack(attack);
+        display_attack(current_attack);
     }
 }
 
-fn high_severity_attacks(attacks: &Vec<Attack>) -> i32 {
+fn display_high_severity_attacks(attack_list: &Vec<Attack>) -> i32 {
     // Keep track of how many High severity attacks we find
-    let mut high_count: i32 = 0;
+    let mut high_severity_count: i32 = 0;
 
     // Go through every attack in the list
-    for attack in attacks {
+    for current_attack in attack_list {
         // Check the severity of each attack
-        match attack.severity {
+        match current_attack.severity {
             // Only display High severity attacks
             Severity::High => {
                 // Increase the counter
-                high_count += 1;
+                high_severity_count += 1;
 
                 // Display the current attack
-                display_attack(attack);
+                display_attack(current_attack);
             }
 
             // Ignore Low and Medium attacks
             _ => {}
         }
     }
+
     // Return the number of High severity attacks
-    high_count
+    high_severity_count
 }
