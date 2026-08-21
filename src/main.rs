@@ -57,6 +57,8 @@ fn main() {
 
             println!("Press Enter to Continue");
 
+            input.clear();
+
             io::stdin()
                 .read_line(&mut input)
                 .expect("Press Enter to Continue");
@@ -68,11 +70,25 @@ fn main() {
 
             println!("Press Enter to Continue");
 
+            input.clear();
+
             io::stdin()
                 .read_line(&mut input)
                 .expect("Press Enter to Continue");
         } else if user_input == "3" {
-            display_attack_country(&attack_list, "Nepal".to_string());
+            print!("Enter target country: ");
+            io::stdout().flush().expect("Failed to flush stdout");
+
+            //ask user for country
+            let mut country_choice = String::new();
+
+            io::stdin()
+                .read_line(&mut country_choice)
+                .expect("Enter target country");
+
+            let country_choice = country_choice.trim().to_string();
+
+            display_attack_country(&attack_list, country_choice);
 
             println!("Press Enter to Continue");
 
