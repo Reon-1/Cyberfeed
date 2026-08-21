@@ -5,6 +5,13 @@ struct Attack {
     target_country: String,
     attack_type: String,
     timestamp: String,
+    severity: Severity,
+}
+
+enum Severity {
+    Low,
+    Medium,
+    High,
 }
 
 fn main() {
@@ -40,6 +47,13 @@ fn main() {
                 println!("Target: {}", attack.target_country);
                 println!("Type: {}", attack.attack_type);
                 println!("Time: {}", attack.timestamp);
+
+                match attack.severity {
+                    Severity::Low => println!("Low"),
+                    Severity::Medium => println!("Medium"),
+                    Severity::High => println!("High"),
+                }
+
                 println!("-----------------------------");
             }
             println!("Press Enter to Continue");
@@ -66,6 +80,7 @@ fn get_attacks() -> Vec<Attack> {
         target_country: String::from("USA"),
         attack_type: String::from("DDoS"),
         timestamp: String::from("2026-08-20 22:15:32"),
+        severity: Severity::Low,
     };
 
     // Create second attack
@@ -74,6 +89,7 @@ fn get_attacks() -> Vec<Attack> {
         target_country: String::from("Germany"),
         attack_type: String::from("Malware"),
         timestamp: String::from("2026-08-21 10:15:32"),
+        severity: Severity::High,
     };
 
     // Create empty list
