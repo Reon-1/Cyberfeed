@@ -41,6 +41,10 @@ fn main() {
 
         // Handle user choice
         if user_input == "1" {
+            // length of vector
+            let attack_len = attacks.len();
+            println!("{} : Attacks Detected", attack_len);
+
             // Go through every attack in the list
             for attack in &attacks {
                 println!("Source: {}", attack.source_country);
@@ -49,9 +53,9 @@ fn main() {
                 println!("Time: {}", attack.timestamp);
 
                 match attack.severity {
-                    Severity::Low => println!("Low"),
-                    Severity::Medium => println!("Medium"),
-                    Severity::High => println!("High"),
+                    Severity::Low => println!("Severity: Low"),
+                    Severity::Medium => println!("Severity: Medium"),
+                    Severity::High => println!("Severity: High"),
                 }
 
                 println!("-----------------------------");
@@ -79,7 +83,7 @@ fn get_attacks() -> Vec<Attack> {
         source_country: String::from("China"),
         target_country: String::from("USA"),
         attack_type: String::from("DDoS"),
-        timestamp: String::from("2026-08-20 22:15:32"),
+        timestamp: String::from("2026-08-20 22:15:11"),
         severity: Severity::Low,
     };
 
@@ -88,15 +92,25 @@ fn get_attacks() -> Vec<Attack> {
         source_country: String::from("Russia"),
         target_country: String::from("Germany"),
         attack_type: String::from("Malware"),
-        timestamp: String::from("2026-08-21 10:15:32"),
+        timestamp: String::from("2026-08-21 10:15:03"),
+        severity: Severity::Medium,
+    };
+
+    // Create Third attack
+    let third_attack = Attack {
+        source_country: String::from("North Korea"),
+        target_country: String::from("Poland"),
+        attack_type: String::from("Trojan"),
+        timestamp: String::from("2026-08-22 01:05:22"),
         severity: Severity::High,
     };
 
     // Create empty list
     let mut attacks: Vec<Attack> = Vec::new();
 
-    // Put both attacks into the list
+    // Put attacks into the list
     attacks.push(first_attack);
     attacks.push(second_attack);
+    attacks.push(third_attack);
     attacks
 }
