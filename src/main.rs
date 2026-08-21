@@ -72,6 +72,16 @@ fn main() {
                 .read_line(&mut input)
                 .expect("Press Enter to Continue");
         } else if user_input == "3" {
+            display_attack_country(&attack_list, "Nepal".to_string());
+
+            println!("Press Enter to Continue");
+
+            input.clear();
+
+            io::stdin()
+                .read_line(&mut input)
+                .expect("Press Enter to Continue");
+        } else if user_input == "4" {
             // Exit the program
             println!("Exit!");
             break;
@@ -86,14 +96,15 @@ fn attack_feed() {
     // Display the available options
     println!("1. View all attacks");
     println!("2. View high severity attacks");
-    println!("3. Exit");
+    println!("3. View attacks targeting Nepal");
+    println!("4. Exit");
 }
 
 fn load_attacks() -> Vec<Attack> {
     // Create first attack
     let attack_1 = Attack {
         source_country: String::from("China"),
-        target_country: String::from("USA"),
+        target_country: String::from("Nepal"),
         attack_type: String::from("DDoS"),
         timestamp: String::from("2026-08-20 22:15:11"),
         severity: Severity::Low,
@@ -178,4 +189,12 @@ fn display_high_severity_attacks(attack_list: &Vec<Attack>) -> i32 {
 
     // Return the number of High severity attacks
     high_severity_count
+}
+
+fn display_attack_country(attack_list: &Vec<Attack>, country: String) {
+    for current_attack in attack_list {
+        if current_attack.target_country == country {
+            display_attack(current_attack);
+        }
+    }
 }
