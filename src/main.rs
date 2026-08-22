@@ -1,10 +1,10 @@
 mod attack;
 mod data;
 
-use serde::Deserialize;
-
 use crate::attack::{Attack, Severity};
 use crate::data::load_attacks;
+use reqwest::blocking::Client;
+use serde::Deserialize;
 use std::io::{self, Write};
 
 // Allows Serde to deserialize JSON data into this struct.
@@ -26,6 +26,32 @@ struct OriginCountry {
     // Position of the country in Cloudflare's ranking.
     rank: usize,
 }
+/// Represents the time-series data returned by Cloudflare.
+#[derive(Deserialize)]
+struct TimeSeries {
+    // Each timestamp corresponds to the value at the same index.
+    timestamps: Vec<String>,
+
+    // Cloudflare returns these values as strings.
+    values: Vec<String>,
+}
+
+// Represents the "result" object in Cloudflare's response.
+#[derive(Deserialize)]
+struct ResultData {
+    // The time-series data is stored under "serie_0".
+    serie_0: TimeSeries,
+}
+
+// Represents the top-level Cloudflare API response.
+#[derive(Deserialize)]
+struct CloudflareResponse {
+    // Indicates whether the API request succeeded.
+    success: bool,
+
+    // Contains the actual API result.
+    result: ResultData,
+}
 
 // recieves JSON string and parses it into an f64
 fn parse_f64_from_string<'de, D>(deserializer: D) -> Result<f64, D::Error>
@@ -37,6 +63,20 @@ where
 }
 
 fn main() {
+    dotenvy::dotenv().ok();
+
+    let client = Client::new();
+
+    let token = std::env::var("CLOUDFLARE_API_TOKEN").expect("CLOUDFLARE_API_TOKEN is not set");
+
+    let response = client
+        .get("https://api.cloudflare.com/client/v4/radar/attacks/layer7/timeseries?aggInterval=1h&dateRange=1d")
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .expect("Failed to send request");
+
+    println!("{}", response.status());
+
     // Get all attacks when the program starts
     let attack_list: Vec<Attack> = load_attacks();
 
