@@ -88,7 +88,7 @@ fn main() {
 
             let country_choice = country_choice.trim().to_string();
 
-            display_attack_country(&attack_list, country_choice);
+            display_attack_country(&attack_list, &country_choice);
 
             println!("Press Enter to Continue");
 
@@ -112,7 +112,7 @@ fn attack_feed() {
     // Display the available options
     println!("1. View all attacks");
     println!("2. View high severity attacks");
-    println!("3. View attacks targeting Nepal");
+    println!("3. View attacks targeting a specefic country");
     println!("4. Exit");
 }
 
@@ -173,7 +173,7 @@ fn display_attack(current_attack: &Attack) {
     println!("-----------------------------");
 }
 
-fn display_all_attacks(attack_list: &Vec<Attack>) {
+fn display_all_attacks(attack_list: &[Attack]) {
     // Go through every attack in the list
     for current_attack in attack_list {
         // Display the current attack
@@ -181,9 +181,9 @@ fn display_all_attacks(attack_list: &Vec<Attack>) {
     }
 }
 
-fn display_high_severity_attacks(attack_list: &Vec<Attack>) -> i32 {
+fn display_high_severity_attacks(attack_list: &[Attack]) -> usize {
     // Keep track of how many High severity attacks we find
-    let mut high_severity_count: i32 = 0;
+    let mut high_severity_count: usize = 0;
 
     // Go through every attack in the list
     for current_attack in attack_list {
@@ -207,10 +207,20 @@ fn display_high_severity_attacks(attack_list: &Vec<Attack>) -> i32 {
     high_severity_count
 }
 
-fn display_attack_country(attack_list: &Vec<Attack>, country: String) {
-    for current_attack in attack_list {
-        if current_attack.target_country == country {
+fn display_attack_country(attack_list: &[Attack], country: &str) {
+    for current_attack in attack_list.iter() {
+        if current_attack.target_country.to_lowercase() == country.to_lowercase() {
             display_attack(current_attack);
         }
     }
 }
+
+// fn attack_level(attack_list: &Vec<Attack>) {
+//     for attack in attack_list {
+//         match attack.severity {
+//             Severity::High => println!("High Threat"),
+
+//             _ => {}
+//         }
+//     }
+// }
