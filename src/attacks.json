@@ -1,0 +1,23 @@
+[
+  {
+    "source_country": "China",
+    "target_country": "Nepal",
+    "attack_type": "DDoS",
+    "timestamp": "2026-08-20 22:15:11",
+    "severity": "Low"
+  },
+  {
+    "source_country": "Russia",
+    "target_country": "Germany",
+    "attack_type": "Malware",
+    "timestamp": "2026-08-21 10:15:03",
+    "severity": "Medium"
+  },
+  {
+    "source_country": "North Korea",
+    "target_country": "Poland",
+    "attack_type": "Trojan",
+    "timestamp": "2026-08-22 01:05:22",
+    "severity": "High"
+  }
+]

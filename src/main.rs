@@ -1,18 +1,9 @@
+mod attack;
+mod data;
+
+use crate::attack::{Attack, Severity};
+use crate::data::load_attacks;
 use std::io::{self, Write};
-
-struct Attack {
-    source_country: String,
-    target_country: String,
-    attack_type: String,
-    timestamp: String,
-    severity: Severity,
-}
-
-enum Severity {
-    Low,
-    Medium,
-    High,
-}
 
 fn main() {
     // Get all attacks when the program starts
@@ -116,47 +107,7 @@ fn attack_feed() {
     println!("4. Exit");
 }
 
-fn load_attacks() -> Vec<Attack> {
-    // Create first attack
-    let attack_1 = Attack {
-        source_country: String::from("China"),
-        target_country: String::from("Nepal"),
-        attack_type: String::from("DDoS"),
-        timestamp: String::from("2026-08-20 22:15:11"),
-        severity: Severity::Low,
-    };
-
-    // Create second attack
-    let attack_2 = Attack {
-        source_country: String::from("Russia"),
-        target_country: String::from("Germany"),
-        attack_type: String::from("Malware"),
-        timestamp: String::from("2026-08-21 10:15:03"),
-        severity: Severity::Medium,
-    };
-
-    // Create third attack
-    let attack_3 = Attack {
-        source_country: String::from("North Korea"),
-        target_country: String::from("Poland"),
-        attack_type: String::from("Trojan"),
-        timestamp: String::from("2026-08-22 01:05:22"),
-        severity: Severity::High,
-    };
-
-    // Create an empty list of attacks
-    let mut attack_list: Vec<Attack> = Vec::new();
-
-    // Put the attacks into the list
-    attack_list.push(attack_1);
-    attack_list.push(attack_2);
-    attack_list.push(attack_3);
-
-    // Return the completed list
-    attack_list
-}
-
-fn display_attack(current_attack: &Attack) {
+pub fn display_attack(current_attack: &Attack) {
     // Display information about one attack
     println!("Source: {}", current_attack.source_country);
     println!("Target: {}", current_attack.target_country);
@@ -173,7 +124,7 @@ fn display_attack(current_attack: &Attack) {
     println!("-----------------------------");
 }
 
-fn display_all_attacks(attack_list: &[Attack]) {
+pub fn display_all_attacks(attack_list: &[Attack]) {
     // Go through every attack in the list
     for current_attack in attack_list {
         // Display the current attack
@@ -181,46 +132,36 @@ fn display_all_attacks(attack_list: &[Attack]) {
     }
 }
 
-fn display_high_severity_attacks(attack_list: &[Attack]) -> usize {
+pub fn display_high_severity_attacks(attack_list: &[Attack]) -> usize {
     // Keep track of how many High severity attacks we find
     let mut high_severity_count: usize = 0;
 
-    // Go through every attack in the list
-    for current_attack in attack_list {
+    // Go through only High severity attacks
+    for current_attack in attack_list.iter().filter(|attack| {
         // Check the severity of each attack
-        match current_attack.severity {
-            // Only display High severity attacks
-            Severity::High => {
-                // Increase the counter
-                high_severity_count += 1;
+        match attack.severity {
+            // Keep High severity attacks
+            Severity::High => true,
 
-                // Display the current attack
-                display_attack(current_attack);
-            }
-
-            // Ignore Low and Medium attacks
-            _ => {}
+            // Reject Low and Medium attacks
+            _ => false,
         }
+    }) {
+        // Now outside the filter.
+        // Anything here is already High severity.
+        high_severity_count += 1;
+
+        display_attack(current_attack);
     }
 
     // Return the number of High severity attacks
     high_severity_count
 }
 
-fn display_attack_country(attack_list: &[Attack], country: &str) {
-    for current_attack in attack_list.iter() {
-        if current_attack.target_country.to_lowercase() == country.to_lowercase() {
-            display_attack(current_attack);
-        }
+pub fn display_attack_country(attack_list: &[Attack], country: &str) {
+    for current_attack in attack_list.iter().filter(|current_attack| {
+        current_attack.target_country.to_lowercase() == country.to_lowercase()
+    }) {
+        display_attack(current_attack);
     }
 }
-
-// fn attack_level(attack_list: &Vec<Attack>) {
-//     for attack in attack_list {
-//         match attack.severity {
-//             Severity::High => println!("High Threat"),
-
-//             _ => {}
-//         }
-//     }
-// }
