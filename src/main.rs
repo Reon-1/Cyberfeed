@@ -1,9 +1,40 @@
 mod attack;
 mod data;
 
+use serde::Deserialize;
+
 use crate::attack::{Attack, Severity};
 use crate::data::load_attacks;
 use std::io::{self, Write};
+
+// Allows Serde to deserialize JSON data into this struct.
+#[derive(Deserialize)]
+struct OriginCountry {
+    // Cloudflare uses camelCase in its JSON.
+    // `rename` maps the JSON field to our Rust snake_case field.
+    #[serde(rename = "originCountryAlpha2")]
+    origin_country_alpha2: String,
+
+    // Maps Cloudflare's JSON field to our Rust field.
+    #[serde(rename = "originCountryName")]
+    origin_country_name: String,
+
+    // Cloudflare sends this value as a string,
+    #[serde(deserialize_with = "parse_f64_from_string")]
+    value: f64,
+
+    // Position of the country in Cloudflare's ranking.
+    rank: usize,
+}
+
+// recieves JSON string and parses it into an f64
+fn parse_f64_from_string<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    value.parse().map_err(serde::de::Error::custom)
+}
 
 fn main() {
     // Get all attacks when the program starts
