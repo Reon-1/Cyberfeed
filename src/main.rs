@@ -6,7 +6,10 @@ use crate::data::load_attacks;
 
 use reqwest::blocking::Client;
 use serde::Deserialize;
+
 use std::io::{self, Write};
+use std::thread::sleep;
+use std::time::Duration;
 
 #[derive(Deserialize)]
 struct OriginCountry {
@@ -53,21 +56,6 @@ fn main() {
     let client = Client::new();
 
     let token = std::env::var("CLOUDFLARE_API_TOKEN").expect("CLOUDFLARE_API_TOKEN is not set");
-
-    let response = client
-        .get("https://api.cloudflare.com/client/v4/radar/attacks/layer7/top/locations/origin?dateRange=1d")
-        .header("Authorization", format!("Bearer {}", token))
-        .send()
-        .expect("Failed to send request");
-
-    println!("{}", response.status());
-
-    // Turn Cloudflare's JSON into our Rust structs.
-    let data: CloudflareResponse = response
-        .json()
-        .expect("Failed to parse Cloudflare response");
-
-    println!("API request successful: {}", data.success);
 
     // Get all attacks when the program starts.
     let attack_list: Vec<Attack> = load_attacks();
@@ -146,16 +134,61 @@ fn main() {
                 .read_line(&mut input)
                 .expect("Press Enter to Continue");
         } else if user_input == "4" {
-            // Display the live Cloudflare data.
-            display_top_origins(&data.result.top_0);
+            println!("Choose refresh interval:");
+            println!("1. Every 5 seconds");
+            println!("2. Every 10 seconds");
+            println!("3. Every 30 seconds");
+            println!("4. Every 1 minute");
+            println!("5. Every 5 minutes");
 
-            println!("Press Enter to Continue");
+            print!("Select: ");
 
-            input.clear();
+            io::stdout().flush().expect("Failed to flush stdout");
+
+            let mut interval_input = String::new();
 
             io::stdin()
-                .read_line(&mut input)
-                .expect("Press Enter to Continue");
+                .read_line(&mut interval_input)
+                .expect("Failed to read interval");
+
+            // Remove the newline from the user's input.
+            let interval_input = interval_input.trim();
+
+            // Convert the user's choice into a Duration.
+            let refresh_interval = match interval_input {
+                "1" => Duration::from_secs(5),
+                "2" => Duration::from_secs(10),
+                "3" => Duration::from_secs(30),
+                "4" => Duration::from_secs(60),
+                "5" => Duration::from_secs(300),
+
+                // If the user enters something invalid,
+                // use 10 seconds as the default.
+                _ => Duration::from_secs(10),
+            };
+
+            //keep track of how many times we have refreshed.
+            let mut refresh_count = 0;
+
+            // Display the live Cloudflare data updating.
+            loop {
+                let data = fetch_cloudflare_data(&client, &token);
+
+                display_top_origins(&data.result.top_0);
+
+                // Increase the refresh count by one
+                refresh_count += 1;
+
+                //Stop the loop after 5 refreshes
+                if refresh_count == 5 {
+                    break;
+                }
+
+                // Wait for the amount of time chosen by the user.
+
+                println!("\n Refreshing...");
+                sleep(refresh_interval);
+            }
         } else if user_input == "5" {
             println!("Exit!");
             break;
@@ -169,7 +202,7 @@ fn attack_feed() {
     println!("1. View all attacks");
     println!("2. View high severity attacks");
     println!("3. View attacks targeting a specific country");
-    println!("4. View top attack origins");
+    println!("4. View Live attack origins");
     println!("5. Exit");
 }
 
@@ -190,7 +223,7 @@ pub fn display_attack(current_attack: &Attack) {
 
 pub fn display_all_attacks(attack_list: &[Attack]) {
     // Go through every attack in the list.
-    for current_attack in attack_list {
+    for current_attack in attack_list.iter() {
         display_attack(current_attack);
     }
 }
@@ -252,4 +285,24 @@ fn country_flag(code: &str) -> String {
             }
         })
         .collect()
+}
+
+// Fetch data from Cloudflare.
+fn fetch_cloudflare_data(client: &Client, token: &str) -> CloudflareResponse {
+    let response = client
+        .get("https://api.cloudflare.com/client/v4/radar/attacks/layer7/top/locations/origin?dateRange=1d")
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .expect("Failed to send request");
+
+    println!("{}", response.status());
+
+    // Turn Cloudflare's JSON into our Rust structs.
+    let data: CloudflareResponse = response
+        .json()
+        .expect("Failed to parse Cloudflare response");
+
+    println!("API request successful: {}", data.success);
+
+    data
 }
