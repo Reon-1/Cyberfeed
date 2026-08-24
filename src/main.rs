@@ -229,8 +229,27 @@ fn display_top_origins(origins: &[OriginCountry]) {
     // Go through each country in Cloudflare's list.
     for country in origins {
         println!(
-            "{}. {} ({}) - {:.2}%",
-            country.rank, country.origin_country_name, country.origin_country_alpha2, country.value
+            "{}. {} {} ({}) - {:.2}%",
+            country.rank,
+            country_flag(&country.origin_country_alpha2),
+            country.origin_country_name,
+            country.origin_country_alpha2,
+            country.value
         );
     }
+}
+
+// Turn a two-letter country code like "US" into 🇺🇸.
+fn country_flag(code: &str) -> String {
+    code.chars()
+        .filter_map(|letter| {
+            let letter = letter.to_ascii_uppercase();
+
+            if letter.is_ascii_uppercase() {
+                char::from_u32(0x1F1E6 + (letter as u32 - 'A' as u32))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
