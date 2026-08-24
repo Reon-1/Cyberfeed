@@ -1,54 +1,16 @@
 mod attack;
+mod cloudflare;
 mod data;
 
 use crate::attack::{Attack, Severity};
+use crate::cloudflare::{display_top_origins, fetch_cloudflare_data};
 use crate::data::load_attacks;
 
 use reqwest::blocking::Client;
-use serde::Deserialize;
 
 use std::io::{self, Write};
 use std::thread::sleep;
 use std::time::Duration;
-
-#[derive(Deserialize)]
-struct OriginCountry {
-    // Cloudflare uses camelCase, so we tell Serde which JSON field to use.
-    #[serde(rename = "originCountryAlpha2")]
-    origin_country_alpha2: String,
-
-    #[serde(rename = "originCountryName")]
-    origin_country_name: String,
-
-    // Cloudflare sends this number as a String, so we convert it to f64.
-    #[serde(deserialize_with = "parse_f64_from_string")]
-    value: f64,
-
-    rank: usize,
-}
-
-// Holds the list of countries returned by Cloudflare.
-#[derive(Deserialize)]
-struct TopOrigins {
-    top_0: Vec<OriginCountry>,
-}
-
-// Represents the main Cloudflare response.
-#[derive(Deserialize)]
-struct CloudflareResponse {
-    success: bool,
-    result: TopOrigins,
-}
-
-// Converts a number like "22.425573" from a JSON String into an f64.
-fn parse_f64_from_string<'de, D>(deserializer: D) -> Result<f64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = String::deserialize(deserializer)?;
-
-    value.parse().map_err(serde::de::Error::custom)
-}
 
 fn main() {
     dotenvy::dotenv().ok();
@@ -167,7 +129,7 @@ fn main() {
                 _ => Duration::from_secs(10),
             };
 
-            //keep track of how many times we have refreshed.
+            // Keep track of how many times we have refreshed.
             let mut refresh_count = 0;
 
             // Display the live Cloudflare data updating.
@@ -176,17 +138,16 @@ fn main() {
 
                 display_top_origins(&data.result.top_0);
 
-                // Increase the refresh count by one
+                // Increase the refresh count by one.
                 refresh_count += 1;
 
-                //Stop the loop after 5 refreshes
+                // Stop the loop after 5 refreshes.
                 if refresh_count == 5 {
                     break;
                 }
 
                 // Wait for the amount of time chosen by the user.
-
-                println!("\n Refreshing...");
+                println!("\nRefreshing...");
                 sleep(refresh_interval);
             }
         } else if user_input == "5" {
@@ -237,7 +198,6 @@ pub fn display_high_severity_attacks(attack_list: &[Attack]) -> usize {
         _ => false,
     }) {
         high_severity_count += 1;
-
         display_attack(current_attack);
     }
 
@@ -251,58 +211,4 @@ pub fn display_attack_country(attack_list: &[Attack], country: &str) {
     }) {
         display_attack(current_attack);
     }
-}
-
-// Display the countries Cloudflare currently reports as the
-// top sources of Layer 7 attacks.
-fn display_top_origins(origins: &[OriginCountry]) {
-    println!("\nTOP ATTACK ORIGINS");
-    println!("-----------------------------");
-
-    // Go through each country in Cloudflare's list.
-    for country in origins {
-        println!(
-            "{}. {} {} ({}) - {:.2}%",
-            country.rank,
-            country_flag(&country.origin_country_alpha2),
-            country.origin_country_name,
-            country.origin_country_alpha2,
-            country.value
-        );
-    }
-}
-
-// Turn a two-letter country code like "US" into 🇺🇸.
-fn country_flag(code: &str) -> String {
-    code.chars()
-        .filter_map(|letter| {
-            let letter = letter.to_ascii_uppercase();
-
-            if letter.is_ascii_uppercase() {
-                char::from_u32(0x1F1E6 + (letter as u32 - 'A' as u32))
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-// Fetch data from Cloudflare.
-fn fetch_cloudflare_data(client: &Client, token: &str) -> CloudflareResponse {
-    let response = client
-        .get("https://api.cloudflare.com/client/v4/radar/attacks/layer7/top/locations/origin?dateRange=1d")
-        .header("Authorization", format!("Bearer {}", token))
-        .send()
-        .expect("Failed to send request");
-
-    println!("{}", response.status());
-
-    // Turn Cloudflare's JSON into our Rust structs.
-    let data: CloudflareResponse = response
-        .json()
-        .expect("Failed to parse Cloudflare response");
-
-    println!("API request successful: {}", data.success);
-
-    data
 }
