@@ -3,11 +3,13 @@ mod cloudflare;
 mod data;
 
 use crate::attack::{Attack, Severity};
-use crate::cloudflare::{display_top_origins, fetch_cloudflare_data};
+use crate::cloudflare::{
+    display_top_attack_pairs, display_top_origins, display_top_targets,
+    fetch_cloudflare_attack_pairs, fetch_cloudflare_data, fetch_cloudflare_targets,
+};
 use crate::data::load_attacks;
 
 use reqwest::blocking::Client;
-
 use std::io::{self, Write};
 use std::thread::sleep;
 use std::time::Duration;
@@ -96,6 +98,34 @@ fn main() {
                 .read_line(&mut input)
                 .expect("Press Enter to Continue");
         } else if user_input == "4" {
+            println!("LIVE ATTACK DATA");
+            println!("-----------------------------");
+            println!("1. Top attack origins");
+            println!("2. Top attack targets");
+            println!("3. Top attack pairs");
+            println!("4. Back");
+
+            print!("Select: ");
+
+            io::stdout().flush().expect("Failed to flush stdout");
+
+            let mut live_input = String::new();
+
+            io::stdin()
+                .read_line(&mut live_input)
+                .expect("Failed to read live data choice");
+
+            let live_choice = live_input.trim();
+
+            if live_choice == "4" {
+                continue;
+            }
+
+            if live_choice != "1" && live_choice != "2" && live_choice != "3" {
+                println!("Invalid Choice!");
+                continue;
+            }
+
             println!("Choose refresh interval:");
             println!("1. Every 5 seconds");
             println!("2. Every 10 seconds");
@@ -134,10 +164,19 @@ fn main() {
 
             // Display the live Cloudflare data updating.
             loop {
-                let data = fetch_cloudflare_data(&client, &token);
+                if live_choice == "1" {
+                    let data = fetch_cloudflare_data(&client, &token);
 
-                display_top_origins(&data.result.top_0);
+                    display_top_origins(&data.result.top_0);
+                } else if live_choice == "2" {
+                    let data = fetch_cloudflare_targets(&client, &token);
 
+                    display_top_targets(&data.result.top_0);
+                } else {
+                    let data = fetch_cloudflare_attack_pairs(&client, &token);
+
+                    display_top_attack_pairs(&data.result.top_0);
+                }
                 // Increase the refresh count by one.
                 refresh_count += 1;
 
@@ -148,6 +187,7 @@ fn main() {
 
                 // Wait for the amount of time chosen by the user.
                 println!("\nRefreshing...");
+
                 sleep(refresh_interval);
             }
         } else if user_input == "5" {
@@ -163,7 +203,7 @@ fn attack_feed() {
     println!("1. View all attacks");
     println!("2. View high severity attacks");
     println!("3. View attacks targeting a specific country");
-    println!("4. View Live attack origins");
+    println!("4. View Live attack data");
     println!("5. Exit");
 }
 
