@@ -1,152 +1,286 @@
 mod cloudflare;
+mod malwarebazzar;
 
-use crate::cloudflare::{
+use cloudflare::{
     display_top_attack_pairs, display_top_origins, display_top_targets,
     fetch_cloudflare_attack_pairs, fetch_cloudflare_data, fetch_cloudflare_targets,
 };
-
+use dotenvy::dotenv;
+use malwarebazzar::{display_malware_data, fetch_malware_data};
 use reqwest::blocking::Client;
+use std::env;
 use std::io::{self, Write};
 use std::thread::sleep;
 use std::time::Duration;
 
 fn main() {
-    dotenvy::dotenv().ok();
+    // Load the variables from the .env file
+    dotenv().ok();
 
     let client = Client::new();
 
-    let token = std::env::var("CLOUDFLARE_API_TOKEN").expect("CLOUDFLARE_API_TOKEN is not set");
+    // Get the API keys from the environment
+    let cloudflare_token =
+        env::var("CLOUDFLARE_API_TOKEN").expect("CLOUDFLARE_API_TOKEN is missing from .env");
+
+    let malwarebazaar_auth_key =
+        env::var("MALWAREBAZAAR_AUTH_KEY").expect("MALWAREBAZAAR_AUTH_KEY is missing from .env");
 
     loop {
-        println!("====================");
-        println!("      CYBERFEED");
-        println!("====================");
+        // Show the main menu
+        clear_screen();
 
-        attack_feed();
+        println!("╔══════════════════════════════════════════════════════════════╗");
+        box_text("CYBERFEED");
+        box_text("THREAT INTELLIGENCE TERMINAL");
+        println!("╠══════════════════════════════════════════════════════════════╣");
+        println!("║                                                            ║");
+        box_menu("[1] Cloudflare Radar    Layer 7 attack activity");
+        box_menu("[2] MalwareBazaar       Recent malware samples");
+        println!("║                                                            ║");
+        box_menu("[0] Exit");
+        println!("║                                                            ║");
+        println!("╚══════════════════════════════════════════════════════════════╝");
 
-        print!("Select One Option: ");
+        print!("\n  Select an option: ");
+        flush();
 
-        // Make sure the prompt appears before waiting for input.
-        io::stdout().flush().expect("Failed to flush stdout");
+        let choice = read_input();
 
-        let mut input = String::new();
-
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
-
-        // Remove whitespace and the newline from the input.
-        let user_input = input.trim();
-
-        println!("You chose option {}", user_input);
-        println!("-----------------------------");
-
-        if user_input == "1" {
-            println!("LIVE ATTACK DATA");
-            println!("-----------------------------");
-
-            println!("1. Top attack origins");
-            println!("2. Top attack targets");
-            println!("3. Top attack pairs");
-            println!("4. Back");
-
-            print!("Select: ");
-
-            io::stdout().flush().expect("Failed to flush stdout");
-
-            let mut live_input = String::new();
-
-            io::stdin()
-                .read_line(&mut live_input)
-                .expect("Failed to read live data choice");
-
-            let live_choice = live_input.trim();
-
-            if live_choice == "4" {
-                continue;
+        match choice.as_str() {
+            "1" => cloudflare_menu(&client, &cloudflare_token),
+            "2" => malwarebazaar_menu(&client, &malwarebazaar_auth_key),
+            "0" => {
+                clear_screen();
+                println!("Goodbye.");
+                break;
             }
-
-            if live_choice != "1" && live_choice != "2" && live_choice != "3" {
-                println!("Invalid Choice!");
-                continue;
+            _ => {
+                println!("\n  Invalid option.");
+                pause();
             }
-
-            println!("Choose refresh interval:");
-
-            println!("1. Every 5 seconds");
-            println!("2. Every 10 seconds");
-            println!("3. Every 30 seconds");
-            println!("4. Every 1 minute");
-            println!("5. Every 5 minutes");
-
-            print!("Select: ");
-
-            io::stdout().flush().expect("Failed to flush stdout");
-
-            let mut interval_input = String::new();
-
-            io::stdin()
-                .read_line(&mut interval_input)
-                .expect("Failed to read interval");
-
-            // Remove the newline from the user's input.
-            let interval_input = interval_input.trim();
-
-            // Convert the user's choice into a Duration.
-            let refresh_interval = match interval_input {
-                "1" => Duration::from_secs(5),
-                "2" => Duration::from_secs(10),
-                "3" => Duration::from_secs(30),
-                "4" => Duration::from_secs(60),
-                "5" => Duration::from_secs(300),
-
-                // If the user enters something invalid,
-                // use 10 seconds as the default.
-                _ => Duration::from_secs(10),
-            };
-
-            // Keep track of how many times we have refreshed.
-            let mut refresh_count = 0;
-
-            // Display the live Cloudflare data updating.
-            loop {
-                if live_choice == "1" {
-                    let data = fetch_cloudflare_data(&client, &token);
-
-                    display_top_origins(&data.result.top_0);
-                } else if live_choice == "2" {
-                    let data = fetch_cloudflare_targets(&client, &token);
-
-                    display_top_targets(&data.result.top_0);
-                } else {
-                    let data = fetch_cloudflare_attack_pairs(&client, &token);
-
-                    display_top_attack_pairs(&data.result.top_0);
-                }
-
-                // Increase the refresh count by one.
-                refresh_count += 1;
-
-                // Stop the loop after 5 refreshes.
-                if refresh_count == 5 {
-                    break;
-                }
-
-                // Wait for the amount of time chosen by the user.
-                println!("\nRefreshing...");
-
-                sleep(refresh_interval);
-            }
-        } else if user_input == "2" {
-            println!("Exit!");
-            break;
-        } else {
-            println!("Invalid Choice!");
         }
     }
 }
 
-fn attack_feed() {
-    println!("1. Cloudflare Live Attack Data");
-    println!("2. Exit");
+fn cloudflare_menu(client: &Client, token: &str) {
+    loop {
+        // Show the Cloudflare menu
+        clear_screen();
+
+        println!("╔══════════════════════════════════════════════════════════════╗");
+        box_text("CLOUDFLARE RADAR");
+        box_text("LIVE LAYER 7 ATTACK DATA");
+        println!("╠══════════════════════════════════════════════════════════════╣");
+        println!("║                                                            ║");
+        box_menu("[1] Top attack origins");
+        box_menu("[2] Top attack targets");
+        box_menu("[3] Top attack pairs");
+        println!("║                                                            ║");
+        box_menu("[0] Back");
+        println!("║                                                            ║");
+        println!("╚══════════════════════════════════════════════════════════════╝");
+
+        print!("\n  Select an option: ");
+        flush();
+
+        let choice = read_input();
+
+        match choice.as_str() {
+            "1" => run_cloudflare_feed(client, token, 1),
+            "2" => run_cloudflare_feed(client, token, 2),
+            "3" => run_cloudflare_feed(client, token, 3),
+            "0" => break,
+            _ => {
+                println!("\n  Invalid option.");
+                pause();
+            }
+        }
+    }
+}
+
+fn run_cloudflare_feed(client: &Client, token: &str, feed: u8) {
+    // Ask how often the live data should refresh
+    let interval = choose_refresh_interval();
+
+    let Some(interval) = interval else {
+        return;
+    };
+
+    // Limit the number of refreshes so the user can return to the menu
+    const MAX_REFRESHES: usize = 5;
+
+    for refresh in 0..MAX_REFRESHES {
+        // Clear the previous results before showing the new data
+        clear_screen();
+
+        println!("╔══════════════════════════════════════════════════════════════╗");
+        box_text("CLOUDFLARE RADAR");
+        box_text("LIVE LAYER 7 ATTACK DATA");
+        println!("╠══════════════════════════════════════════════════════════════╣");
+        println!("║                                                            ║");
+
+        match feed {
+            1 => {
+                // Fetch the top attack origins
+                let data = fetch_cloudflare_data(client, token);
+
+                if data.success {
+                    display_top_origins(&data.result);
+                } else {
+                    println!("  Cloudflare API returned an unsuccessful response.");
+                }
+            }
+            2 => {
+                // Fetch the top attack targets
+                let data = fetch_cloudflare_targets(client, token);
+
+                if data.success {
+                    display_top_targets(&data.result);
+                } else {
+                    println!("  Cloudflare API returned an unsuccessful response.");
+                }
+            }
+            3 => {
+                // Fetch the top origin to target attack pairs
+                let data = fetch_cloudflare_attack_pairs(client, token);
+
+                if data.success {
+                    display_top_attack_pairs(&data.result);
+                } else {
+                    println!("  Cloudflare API returned an unsuccessful response.");
+                }
+            }
+            _ => {}
+        }
+
+        println!("║                                                            ║");
+        println!("╠══════════════════════════════════════════════════════════════╣");
+
+        let current = refresh + 1;
+
+        if current < MAX_REFRESHES {
+            box_text(&format!(
+                "Refresh {}/{} • Next update in {}",
+                current,
+                MAX_REFRESHES,
+                format_duration(interval)
+            ));
+
+            println!("╚══════════════════════════════════════════════════════════════╝");
+
+            // Wait before fetching the next update
+            sleep(interval);
+        } else {
+            box_text("Refresh limit reached");
+            println!("╚══════════════════════════════════════════════════════════════╝");
+
+            pause();
+        }
+    }
+}
+
+fn choose_refresh_interval() -> Option<Duration> {
+    loop {
+        // Show the refresh interval options
+        clear_screen();
+
+        println!("╔══════════════════════════════════════════════════════════════╗");
+        box_text("REFRESH INTERVAL");
+        box_text("CLOUDFLARE LIVE FEED");
+        println!("╠══════════════════════════════════════════════════════════════╣");
+        println!("║                                                            ║");
+        box_menu("[1] 5 seconds");
+        box_menu("[2] 10 seconds");
+        box_menu("[3] 30 seconds");
+        box_menu("[4] 1 minute");
+        box_menu("[5] 5 minutes");
+        println!("║                                                            ║");
+        box_menu("[0] Back");
+        println!("║                                                            ║");
+        println!("╚══════════════════════════════════════════════════════════════╝");
+
+        print!("\n  Select an option: ");
+        flush();
+
+        match read_input().as_str() {
+            "1" => return Some(Duration::from_secs(5)),
+            "2" => return Some(Duration::from_secs(10)),
+            "3" => return Some(Duration::from_secs(30)),
+            "4" => return Some(Duration::from_secs(60)),
+            "5" => return Some(Duration::from_secs(300)),
+            "0" => return None,
+            _ => {
+                println!("\n  Invalid option.");
+                pause();
+            }
+        }
+    }
+}
+
+fn malwarebazaar_menu(client: &Client, auth_key: &str) {
+    // Fetch and display the latest MalwareBazaar samples
+    clear_screen();
+
+    let data = fetch_malware_data(client, auth_key);
+
+    display_malware_data(&data);
+
+    pause();
+}
+
+fn box_text(text: &str) {
+    // Center text inside the 60-character box
+    println!("║{:^60}║", text);
+}
+
+fn box_menu(text: &str) {
+    // Keep menu options aligned inside the box
+    println!("║  {:<58}║", text);
+}
+
+fn clear_screen() {
+    // Clear the screen and move the cursor back to the top
+    print!("\x1B[2J\x1B[3J\x1B[H");
+    flush();
+}
+
+fn read_input() -> String {
+    let mut input = String::new();
+
+    // Read the user's menu choice
+    io::stdin()
+        .read_line(&mut input)
+        .expect("Failed to read input");
+
+    input.trim().to_string()
+}
+
+fn pause() {
+    // Wait for the user before returning to the menu
+    print!("\n  Press Enter to continue...");
+    flush();
+
+    let mut input = String::new();
+
+    io::stdin()
+        .read_line(&mut input)
+        .expect("Failed to read input");
+}
+
+fn flush() {
+    // Make sure printed text appears immediately
+    io::stdout().flush().expect("Failed to flush stdout");
+}
+
+fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+
+    // Display minutes when the interval is one minute or longer
+    if seconds >= 60 {
+        let minutes = seconds / 60;
+        format!("{} minute(s)", minutes)
+    } else {
+        format!("{} second(s)", seconds)
+    }
 }
