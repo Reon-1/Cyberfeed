@@ -2,6 +2,8 @@ use reqwest::blocking::Client;
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 
+use crate::ui;
+
 #[derive(Deserialize)]
 pub struct OriginCountry {
     #[serde(rename = "originCountryAlpha2")]
@@ -130,50 +132,50 @@ pub fn fetch_cloudflare_attack_pairs(
 }
 
 pub fn display_top_origins(data: &TopOrigins) {
-    println!("║  SOURCE COUNTRIES                                         ║");
-    println!("║                                                            ║");
+    ui::box_line("  SOURCE COUNTRIES");
+    ui::box_line("");
 
     // Display each country returned by Cloudflare
     for country in &data.top_0 {
         let flag = country_flag(&country.origin_country_alpha2);
         let bar = percentage_bar(country.value);
 
-        println!(
-            "║  #{:<2} {} {:<18} {:>6.2}%                         ║",
+        ui::box_line(&format!(
+            "  #{:<2} {} {:<18} {:>6.2}%",
             country.rank,
             flag,
             shorten(&country.origin_country_name, 18),
             country.value
-        );
+        ));
 
-        println!("║      {}                                    ║", bar);
+        ui::box_line(&format!("      {bar}"));
     }
 }
 
 pub fn display_top_targets(data: &TopTargets) {
-    println!("║  TARGET COUNTRIES                                         ║");
-    println!("║                                                            ║");
+    ui::box_line("  TARGET COUNTRIES");
+    ui::box_line("");
 
     // Display each target country returned by Cloudflare
     for country in &data.top_0 {
         let flag = country_flag(&country.target_country_alpha2);
         let bar = percentage_bar(country.value);
 
-        println!(
-            "║  #{:<2} {} {:<18} {:>6.2}%                         ║",
+        ui::box_line(&format!(
+            "  #{:<2} {} {:<18} {:>6.2}%",
             country.rank,
             flag,
             shorten(&country.target_country_name, 18),
             country.value
-        );
+        ));
 
-        println!("║      {}                                    ║", bar);
+        ui::box_line(&format!("      {bar}"));
     }
 }
 
 pub fn display_top_attack_pairs(data: &TopAttackPairs) {
-    println!("║  ORIGIN → TARGET ATTACK PAIRS                              ║");
-    println!("║                                                            ║");
+    ui::box_line("  ORIGIN → TARGET ATTACK PAIRS");
+    ui::box_line("");
 
     // Display where the attacks are coming from and where they are going
     for pair in &data.top_0 {
@@ -181,17 +183,17 @@ pub fn display_top_attack_pairs(data: &TopAttackPairs) {
         let target_flag = country_flag(&pair.target_country_alpha2);
         let bar = percentage_bar(pair.value);
 
-        println!(
-            "║  #{:<2} {} {} → {} {:<16} {:>6.2}%              ║",
+        ui::box_line(&format!(
+            "  #{:<2} {} {} → {} {:<16} {:>6.2}%",
             pair.rank,
             origin_flag,
             shorten(&pair.origin_country_name, 12),
             target_flag,
             shorten(&pair.target_country_name, 16),
             pair.value
-        );
+        ));
 
-        println!("║      {}                                    ║", bar);
+        ui::box_line(&format!("      {bar}"));
     }
 }
 

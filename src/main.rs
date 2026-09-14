@@ -1,12 +1,13 @@
 mod cloudflare;
-mod malwarebazzar;
+mod malwarebazaar;
+mod ui;
 
 use cloudflare::{
     display_top_attack_pairs, display_top_origins, display_top_targets,
     fetch_cloudflare_attack_pairs, fetch_cloudflare_data, fetch_cloudflare_targets,
 };
 use dotenvy::dotenv;
-use malwarebazzar::{display_malware_data, fetch_malware_data};
+use malwarebazaar::{display_malware_data, fetch_malware_data};
 use reqwest::blocking::Client;
 use std::env;
 use std::io::{self, Write};
@@ -34,12 +35,12 @@ fn main() {
         box_text("CYBERFEED");
         box_text("THREAT INTELLIGENCE TERMINAL");
         println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║                                                            ║");
+        ui::box_line("");
         box_menu("[1] Cloudflare Radar    Layer 7 attack activity");
         box_menu("[2] MalwareBazaar       Recent malware samples");
-        println!("║                                                            ║");
+        ui::box_line("");
         box_menu("[0] Exit");
-        println!("║                                                            ║");
+        ui::box_line("");
         println!("╚══════════════════════════════════════════════════════════════╝");
 
         print!("\n  Select an option: ");
@@ -72,13 +73,13 @@ fn cloudflare_menu(client: &Client, token: &str) {
         box_text("CLOUDFLARE RADAR");
         box_text("LIVE LAYER 7 ATTACK DATA");
         println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║                                                            ║");
+        ui::box_line("");
         box_menu("[1] Top attack origins");
         box_menu("[2] Top attack targets");
         box_menu("[3] Top attack pairs");
-        println!("║                                                            ║");
+        ui::box_line("");
         box_menu("[0] Back");
-        println!("║                                                            ║");
+        ui::box_line("");
         println!("╚══════════════════════════════════════════════════════════════╝");
 
         print!("\n  Select an option: ");
@@ -118,7 +119,7 @@ fn run_cloudflare_feed(client: &Client, token: &str, feed: u8) {
         box_text("CLOUDFLARE RADAR");
         box_text("LIVE LAYER 7 ATTACK DATA");
         println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║                                                            ║");
+        ui::box_line("");
 
         match feed {
             1 => {
@@ -154,7 +155,7 @@ fn run_cloudflare_feed(client: &Client, token: &str, feed: u8) {
             _ => {}
         }
 
-        println!("║                                                            ║");
+        ui::box_line("");
         println!("╠══════════════════════════════════════════════════════════════╣");
 
         let current = refresh + 1;
@@ -189,15 +190,15 @@ fn choose_refresh_interval() -> Option<Duration> {
         box_text("REFRESH INTERVAL");
         box_text("CLOUDFLARE LIVE FEED");
         println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║                                                            ║");
+        ui::box_line("");
         box_menu("[1] 5 seconds");
         box_menu("[2] 10 seconds");
         box_menu("[3] 30 seconds");
         box_menu("[4] 1 minute");
         box_menu("[5] 5 minutes");
-        println!("║                                                            ║");
+        ui::box_line("");
         box_menu("[0] Back");
-        println!("║                                                            ║");
+        ui::box_line("");
         println!("╚══════════════════════════════════════════════════════════════╝");
 
         print!("\n  Select an option: ");
@@ -230,13 +231,13 @@ fn malwarebazaar_menu(client: &Client, auth_key: &str) {
 }
 
 fn box_text(text: &str) {
-    // Center text inside the 60-character box
-    println!("║{:^60}║", text);
+    // Center text inside the 62-character box interior.
+    ui::centered_box_line(text);
 }
 
 fn box_menu(text: &str) {
     // Keep menu options aligned inside the box
-    println!("║  {:<58}║", text);
+    ui::box_line(&format!("  {text}"));
 }
 
 fn clear_screen() {
