@@ -220,14 +220,58 @@ fn choose_refresh_interval() -> Option<Duration> {
 }
 
 fn malwarebazaar_menu(client: &Client, auth_key: &str) {
-    // Fetch and display the latest MalwareBazaar samples
-    clear_screen();
+    loop {
+        clear_screen();
 
-    let data = fetch_malware_data(client, auth_key);
+        println!("╔══════════════════════════════════════════════════════════════╗");
+        box_text("MALWAREBAZAAR");
+        box_text("MALWARE SAMPLE FEED");
+        println!("╠══════════════════════════════════════════════════════════════╣");
+        ui::box_line("");
+        box_menu("[1] Recent malware samples");
+        box_menu("[2] Filter samples by country");
+        ui::box_line("");
+        box_menu("[0] Back");
+        ui::box_line("");
+        println!("╚══════════════════════════════════════════════════════════════╝");
 
-    display_malware_data(&data);
+        print!("\n  Select an option: ");
+        flush();
 
-    pause();
+        match read_input().as_str() {
+            "1" => {
+                let data = fetch_malware_data(client, auth_key);
+                clear_screen();
+                display_malware_data(&data, None);
+                pause();
+            }
+            "2" => {
+                print!("\n  Enter a two-letter country code (for example, NP): ");
+                flush();
+                let country = read_input().to_uppercase();
+
+                if country.len() != 2
+                    || !country
+                        .chars()
+                        .all(|character| character.is_ascii_alphabetic())
+                {
+                    println!("\n  Please enter a valid two-letter country code.");
+                    pause();
+                    continue;
+                }
+
+                let data = fetch_malware_data(client, auth_key);
+                clear_screen();
+                display_malware_data(&data, Some(&country));
+                pause();
+            }
+            "0" => break,
+            _ => {
+                println!("\n  Invalid option.");
+                pause();
+            }
+        }
+    }
 }
 
 fn box_text(text: &str) {
