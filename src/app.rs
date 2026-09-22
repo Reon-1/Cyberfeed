@@ -2,7 +2,7 @@ use crate::cloudflare::{
     display_top_attack_pairs, display_top_origins, display_top_targets,
     fetch_cloudflare_attack_pairs, fetch_cloudflare_data, fetch_cloudflare_targets,
 };
-use crate::file::{FileInfo, format_size, inspect_file};
+use crate::file::{FileInfo, extract_text_indicators, format_size, inspect_file};
 use crate::indicator::IndicatorType;
 use crate::investigation::Investigation;
 use crate::malwarebazaar::{
@@ -11,6 +11,7 @@ use crate::malwarebazaar::{
 use crate::ui;
 use reqwest::blocking::Client;
 use std::io::{self, Write};
+use std::net::IpAddr;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -21,7 +22,7 @@ pub fn run(client: &Client, cloudflare_token: &str, malwarebazaar_auth_key: &str
         clear_screen();
         ui::header("CYBERFEED", "Defensive Cybersecurity Investigation");
         ui::box_line("");
-        menu_item("1", "Investigate File", "Analyze a suspicious local file");
+        menu_item("1", "Check a File", "Analyze a file on this computer");
         menu_item(
             "2",
             "Investigation",
@@ -64,10 +65,13 @@ fn investigation_menu(client: &Client, auth_key: &str, investigation: &mut Inves
         clear_screen();
         ui::header("INVESTIGATION", "Collect and investigate evidence");
         ui::box_line("");
-        menu_item("1", "Investigate File", "Hash a suspicious local file");
-        menu_item("2", "Add Indicator", "Manually add a hash, IP, or domain");
-        menu_item("3", "View Indicators", "Review evidence in this session");
-        menu_item("4", "Investigate Indicator", "Check a collected hash");
+        menu_item("1", "Check a File", "Analyze a file on this computer");
+        menu_item(
+            "2",
+            "Check an Indicator",
+            "Check a hash, IP address, or domain",
+        );
+        menu_item("3", "Investigation", "View collected evidence");
         ui::box_line("");
         menu_item("0", "Back", "Return to the main menu");
         ui::box_line("");
@@ -78,9 +82,8 @@ fn investigation_menu(client: &Client, auth_key: &str, investigation: &mut Inves
 
         match read_input().as_str() {
             "1" => investigate_file(client, auth_key, investigation),
-            "2" => add_indicator(investigation),
+            "2" => check_indicator(client, auth_key, investigation),
             "3" => view_indicators(investigation),
-            "4" => investigate_indicator(client, auth_key, investigation),
             "0" => break,
             _ => invalid_choice(),
         }
@@ -91,7 +94,7 @@ fn investigate_file(client: &Client, auth_key: &str, investigation: &mut Investi
     clear_screen();
     ui::header("FILE INVESTIGATION", "Analyze a suspicious local file");
     ui::box_line("");
-    ui::box_line("  The file will be read only to calculate its SHA-256.");
+    ui::box_line("  The file will be read only as data for hashing and text inspection.");
     ui::box_line("  CyberFeed will not execute or upload the file.");
     ui::box_line("");
 
@@ -121,17 +124,60 @@ fn investigate_file(client: &Client, auth_key: &str, investigation: &mut Investi
     clear_screen();
     ui::header("FILE INVESTIGATION", "SHA-256 threat-intelligence lookup");
     display_file_info(&file);
-    ui::box_line("");
-    ui::box_line("  THREAT INTELLIGENCE");
-    ui::box_line("  Source:  MalwareBazaar");
-    ui::box_line("  Status:  Checking hash...");
-    ui::box_line("");
+    ui::section("THREAT INTELLIGENCE");
+    ui::field("Source", "MalwareBazaar");
+    ui::status("STATUS", "Checking hash...", ui::Status::Neutral);
 
     match lookup_malware_hash(client, auth_key, &indicator.value) {
-        Ok(sample) => display_hash_lookup(indicator, sample.as_ref()),
+        Ok(sample) => {
+            ui::section("FILE RESULT");
+            ui::field("Type", indicator.indicator_type.as_str());
+            ui::field("Value", &indicator.value);
+            display_hash_lookup(indicator, sample.as_ref());
+        }
         Err(error) => {
-            ui::box_line("  ERROR  MalwareBazaar could not be reached.");
-            ui::box_line(&format!("  Details: {error}"));
+            ui::section("LOOKUP FAILED");
+            ui::error("MalwareBazaar lookup failed.");
+            ui::field("Details", error);
+        }
+    }
+
+    match extract_text_indicators(&path) {
+        Ok(indicators) if !indicators.is_empty() => {
+            ui::section("EXTRACTED INDICATORS");
+            for (index, extracted) in indicators.into_iter().enumerate() {
+                let is_hash = matches!(&extracted.indicator_type, IndicatorType::Hash);
+                investigation.add_indicators(vec![extracted]);
+                let extracted = investigation
+                    .indicators()
+                    .last()
+                    .expect("extracted indicator was just added");
+
+                ui::indicator(
+                    index + 1,
+                    extracted.indicator_type.as_str(),
+                    &extracted.value,
+                );
+
+                if is_hash {
+                    ui::field("Source", "MalwareBazaar");
+                    match lookup_malware_hash(client, auth_key, &extracted.value) {
+                        Ok(sample) => display_hash_lookup(extracted, sample.as_ref()),
+                        Err(error) => {
+                            ui::section("LOOKUP FAILED");
+                            ui::error("MalwareBazaar lookup failed.");
+                            ui::field("Details", error);
+                        }
+                    }
+                } else {
+                    ui::field("Lookup", "No connected source is available yet.");
+                }
+            }
+        }
+        Ok(_) => ui::box_line("  No indicators found in readable text content."),
+        Err(error) => {
+            ui::section("CONTENT INSPECTION SKIPPED");
+            ui::field("Details", error);
         }
     }
 
@@ -140,137 +186,105 @@ fn investigate_file(client: &Client, auth_key: &str, investigation: &mut Investi
 }
 
 fn display_file_info(file: &FileInfo) {
-    ui::box_line("  FILE");
-    ui::box_line("  ──────────────────────────────────────────────────────────");
-    ui::box_line(&format!("  Name:    {}", file.name));
-    ui::box_line(&format!("  Size:    {}", format_size(file.size)));
-    ui::box_line(&format!("  SHA-256: {}", file.sha256));
+    ui::section("FILE");
+    ui::field("Name", &file.name);
+    ui::field("Size", format_size(file.size));
+    ui::field("SHA-256", &file.sha256);
 }
 
-fn add_indicator(investigation: &mut Investigation) {
+fn check_indicator(client: &Client, auth_key: &str, investigation: &mut Investigation) {
     clear_screen();
-    ui::header("ADD INDICATOR", "Manual evidence entry");
+    ui::header("CHECK AN INDICATOR", "Check a hash, IP address, or domain");
     ui::box_line("");
-    ui::box_line("  This is an advanced path for non-file evidence.");
+    ui::box_line("  Enter a hash, IP address, or domain.");
+    ui::box_line("  CyberFeed will identify the type automatically.");
     ui::box_line("");
-    ui::box_line("  What are you investigating?");
-    ui::box_line("");
-    ui::box_line("  [1] Hash");
-    ui::box_line("  [2] IP address");
-    ui::box_line("  [3] Domain");
-    ui::box_line("  [0] Cancel");
 
-    print!("\n  Select a type: ");
-    flush();
-
-    let indicator_type = match read_input().as_str() {
-        "1" => IndicatorType::Hash,
-        "2" => IndicatorType::IP,
-        "3" => IndicatorType::Domain,
-        "0" => return,
-        _ => {
-            show_error("Please choose one of the listed indicator types.");
-            return;
-        }
-    };
-
-    print!("\n  Enter the indicator value: ");
+    print!("  Value: ");
     flush();
     let value = read_input();
 
     if value.is_empty() {
-        show_error("The indicator value cannot be empty.");
+        show_error("A hash, IP address, or domain is required.");
         return;
     }
+
+    let Some(indicator_type) = infer_indicator_type(&value) else {
+        show_error("CyberFeed could not identify that value as a hash, IP address, or domain.");
+        return;
+    };
 
     let type_name = indicator_type.as_str().to_string();
     investigation.add_indicator(value.clone(), indicator_type);
 
+    let indicator = investigation
+        .indicators()
+        .last()
+        .expect("indicator was just added");
+
+    if !matches!(&indicator.indicator_type, IndicatorType::Hash) {
+        clear_screen();
+        ui::header("INDICATOR CHECK", "Evidence saved to this investigation");
+        ui::section("INDICATOR");
+        ui::field("Type", &type_name);
+        ui::field("Value", &value);
+        ui::section("LOOKUP STATUS");
+        ui::status("LOOKUP", "NOT AVAILABLE", ui::Status::Warning);
+        ui::warning("No threat-intelligence source is connected for this type yet.");
+        ui::box_line("  The indicator has been saved for this investigation.");
+        close_box();
+        pause();
+        return;
+    }
+
     clear_screen();
-    ui::header("INDICATOR ADDED", "Evidence saved to this session");
-    ui::box_line("");
-    ui::box_line("  SUCCESS  Indicator added");
-    ui::box_line(&format!("  Type:     {type_name}"));
-    ui::box_line(&format!("  Value:    {value}"));
+    ui::header("INDICATOR CHECK", "Checking this hash with MalwareBazaar");
+    ui::section("INDICATOR");
+    ui::field("Type", &type_name);
+    ui::field("Value", &value);
+    ui::section("THREAT INTELLIGENCE");
+    ui::field("Source", "MalwareBazaar");
+    ui::status("STATUS", "Checking...", ui::Status::Neutral);
+
+    match lookup_malware_hash(client, auth_key, &indicator.value) {
+        Ok(sample) => display_hash_lookup(indicator, sample.as_ref()),
+        Err(error) => {
+            ui::section("LOOKUP FAILED");
+            ui::error("MalwareBazaar lookup failed.");
+            ui::field("Details", error);
+        }
+    }
+
     close_box();
     pause();
+}
+
+fn infer_indicator_type(value: &str) -> Option<IndicatorType> {
+    if value.parse::<IpAddr>().is_ok() {
+        return Some(IndicatorType::IP);
+    }
+
+    let is_hash = matches!(value.len(), 32 | 40 | 64)
+        && value.chars().all(|character| character.is_ascii_hexdigit());
+    if is_hash {
+        return Some(IndicatorType::Hash);
+    }
+
+    let is_domain = value.contains('.')
+        && !value.chars().any(char::is_whitespace)
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        });
+    is_domain.then_some(IndicatorType::Domain)
 }
 
 fn view_indicators(investigation: &Investigation) {
     clear_screen();
     ui::header("COLLECTED INDICATORS", "Evidence in this investigation");
     investigation.display_indicators();
-    close_box();
-    pause();
-}
-
-fn investigate_indicator(client: &Client, auth_key: &str, investigation: &Investigation) {
-    clear_screen();
-    ui::header(
-        "INVESTIGATE INDICATOR",
-        "Check collected evidence with MalwareBazaar",
-    );
-
-    if investigation.indicators().is_empty() {
-        ui::box_line("");
-        ui::box_line("  No indicators collected yet.");
-        ui::box_line("  Investigate a file or add an indicator first.");
-        close_box();
-        pause();
-        return;
-    }
-
-    ui::box_line("");
-    ui::box_line("  Choose an indicator:");
-    for (index, indicator) in investigation.indicators().iter().enumerate() {
-        ui::box_line(&format!(
-            "  [{}] {} ({})",
-            index + 1,
-            indicator.value,
-            indicator.indicator_type.as_str()
-        ));
-    }
-
-    print!("\n  Select an indicator: ");
-    flush();
-    let selection = match read_input().parse::<usize>() {
-        Ok(selection) if selection > 0 => selection - 1,
-        _ => {
-            show_error("Please enter a valid indicator number.");
-            return;
-        }
-    };
-
-    let Some(indicator) = investigation.indicators().get(selection) else {
-        show_error("That indicator number does not exist.");
-        return;
-    };
-
-    if !matches!(&indicator.indicator_type, IndicatorType::Hash) {
-        show_info("MalwareBazaar lookup currently supports hashes only.");
-        return;
-    }
-
-    clear_screen();
-    ui::header("INDICATOR INVESTIGATION", "Checking the selected hash");
-    ui::box_line("");
-    ui::box_line("  INDICATOR");
-    ui::box_line(&format!("  Type:   {}", indicator.indicator_type.as_str()));
-    ui::box_line(&format!("  Value:  {}", indicator.value));
-    ui::box_line("");
-    ui::box_line("  SOURCE");
-    ui::box_line("  MalwareBazaar");
-    ui::box_line("  STATUS  Checking...");
-    ui::box_line("");
-
-    match lookup_malware_hash(client, auth_key, &indicator.value) {
-        Ok(sample) => display_hash_lookup(indicator, sample.as_ref()),
-        Err(error) => {
-            ui::box_line("  ERROR  MalwareBazaar could not be reached.");
-            ui::box_line(&format!("  Details: {error}"));
-        }
-    }
-
     close_box();
     pause();
 }
@@ -410,7 +424,7 @@ fn run_cloudflare_feed(client: &Client, token: &str, feed: u8) {
                 if data.success {
                     display_top_origins(&data.result);
                 } else {
-                    ui::box_line("  ERROR  Cloudflare returned an unsuccessful response.");
+                    ui::error("Cloudflare returned an unsuccessful response.");
                 }
             }
             2 => {
@@ -418,7 +432,7 @@ fn run_cloudflare_feed(client: &Client, token: &str, feed: u8) {
                 if data.success {
                     display_top_targets(&data.result);
                 } else {
-                    ui::box_line("  ERROR  Cloudflare returned an unsuccessful response.");
+                    ui::error("Cloudflare returned an unsuccessful response.");
                 }
             }
             3 => {
@@ -426,14 +440,14 @@ fn run_cloudflare_feed(client: &Client, token: &str, feed: u8) {
                 if data.success {
                     display_top_attack_pairs(&data.result);
                 } else {
-                    ui::box_line("  ERROR  Cloudflare returned an unsuccessful response.");
+                    ui::error("Cloudflare returned an unsuccessful response.");
                 }
             }
             _ => {}
         }
 
         ui::box_line("");
-        println!("╠══════════════════════════════════════════════════════════════╣");
+        ui::divider();
 
         let current = refresh + 1;
         if current < MAX_REFRESHES {
@@ -441,7 +455,7 @@ fn run_cloudflare_feed(client: &Client, token: &str, feed: u8) {
                 "Refresh {current}/{MAX_REFRESHES} • Next update in {}",
                 format_duration(interval)
             ));
-            println!("╚══════════════════════════════════════════════════════════════╝");
+            ui::close_box();
             sleep(interval);
         } else {
             ui::centered_box_line("Refresh limit reached");
@@ -485,12 +499,11 @@ fn choose_refresh_interval() -> Option<Duration> {
 }
 
 fn menu_item(number: &str, title: &str, description: &str) {
-    ui::box_line(&format!("  [{number}] {title}"));
-    ui::box_line(&format!("      {description}"));
+    ui::menu_item(number, title, description);
 }
 
 fn close_box() {
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    ui::close_box();
 }
 
 fn invalid_choice() {
@@ -500,15 +513,8 @@ fn invalid_choice() {
 fn show_error(message: &str) {
     clear_screen();
     ui::header("ERROR", "The requested action could not be completed");
-    ui::box_line(&format!("  {message}"));
-    close_box();
-    pause();
-}
-
-fn show_info(message: &str) {
-    clear_screen();
-    ui::header("INFORMATION", "No lookup was performed");
-    ui::box_line(&format!("  {message}"));
+    ui::section("MESSAGE");
+    ui::error(message);
     close_box();
     pause();
 }
@@ -516,8 +522,9 @@ fn show_info(message: &str) {
 fn show_source_error(error: &str) {
     clear_screen();
     ui::header("THREAT INTELLIGENCE", "The source could not be loaded");
-    ui::box_line("  ERROR  Request failed.");
-    ui::box_line(&format!("  Details: {error}"));
+    ui::section("REQUEST FAILED");
+    ui::error("The intelligence source returned an error.");
+    ui::field("Details", error);
     close_box();
     pause();
 }

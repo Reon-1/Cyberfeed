@@ -132,8 +132,7 @@ pub fn fetch_cloudflare_attack_pairs(
 }
 
 pub fn display_top_origins(data: &TopOrigins) {
-    ui::box_line("  SOURCE COUNTRIES");
-    ui::box_line("");
+    ui::section("SOURCE COUNTRIES");
 
     // Display each country returned by Cloudflare
     for country in &data.top_0 {
@@ -153,8 +152,7 @@ pub fn display_top_origins(data: &TopOrigins) {
 }
 
 pub fn display_top_targets(data: &TopTargets) {
-    ui::box_line("  TARGET COUNTRIES");
-    ui::box_line("");
+    ui::section("TARGET COUNTRIES");
 
     // Display each target country returned by Cloudflare
     for country in &data.top_0 {
@@ -174,8 +172,7 @@ pub fn display_top_targets(data: &TopTargets) {
 }
 
 pub fn display_top_attack_pairs(data: &TopAttackPairs) {
-    ui::box_line("  ORIGIN → TARGET ATTACK PAIRS");
-    ui::box_line("");
+    ui::section("ORIGIN → TARGET ATTACK PAIRS");
 
     // Display where the attacks are coming from and where they are going
     for pair in &data.top_0 {

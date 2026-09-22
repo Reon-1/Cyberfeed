@@ -1,6 +1,8 @@
+use crate::indicator::{Indicator, IndicatorType};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
+use std::net::IpAddr;
 use std::path::Path;
 
 pub struct FileInfo {
@@ -60,5 +62,113 @@ pub fn format_size(bytes: u64) -> String {
         format!("{:.2} KiB", bytes as f64 / KIB as f64)
     } else {
         format!("{} bytes", bytes)
+    }
+}
+
+// Read indicators only from content that is safely recognizable as text.
+pub fn extract_text_indicators(path_text: &str) -> Result<Vec<Indicator>, String> {
+    let path = Path::new(path_text);
+    let contents =
+        fs::read(path).map_err(|error| format!("Could not read '{}': {error}", path.display()))?;
+
+    let Ok(text) = std::str::from_utf8(&contents) else {
+        return Ok(Vec::new());
+    };
+
+    if text.contains('\0') {
+        return Ok(Vec::new());
+    }
+
+    Ok(text
+        .split_whitespace()
+        .filter_map(|token| {
+            Some(token.trim_matches(|character: char| {
+                !character.is_ascii_alphanumeric() && !matches!(character, '.' | '-')
+            }))
+        })
+        .filter_map(indicator_from_token)
+        .collect())
+}
+
+fn indicator_from_token(token: &str) -> Option<Indicator> {
+    if token.len() == 64 && token.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Some(Indicator {
+            value: token.to_string(),
+            indicator_type: IndicatorType::Hash,
+        });
+    }
+
+    if token.parse::<IpAddr>().is_ok() {
+        return Some(Indicator {
+            value: token.to_string(),
+            indicator_type: IndicatorType::IP,
+        });
+    }
+
+    let is_domain = token.contains('.')
+        && token.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        });
+
+    is_domain.then(|| Indicator {
+        value: token.to_string(),
+        indicator_type: IndicatorType::Domain,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_text_indicators;
+    use crate::indicator::IndicatorType;
+    use std::fs;
+
+    #[test]
+    fn extracts_hash_ip_and_domain_from_text_file() {
+        let path = std::env::temp_dir().join(format!(
+            "cyberfeed-indicators-{}-{}.txt",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::write(
+            &path,
+            "226a723ffb4a91d9950a8b266167c5b354ab0db1dc225578494917fe53867ef2\nsecurity-malware.com\n185.244.150.174\n",
+        )
+        .expect("test file should be writable");
+
+        let indicators = extract_text_indicators(path.to_str().expect("valid test path"))
+            .expect("text extraction should succeed");
+
+        assert_eq!(indicators.len(), 3);
+        assert!(matches!(indicators[0].indicator_type, IndicatorType::Hash));
+        assert!(matches!(
+            indicators[1].indicator_type,
+            IndicatorType::Domain
+        ));
+        assert!(matches!(indicators[2].indicator_type, IndicatorType::IP));
+        assert_eq!(
+            indicators[0].value,
+            "226a723ffb4a91d9950a8b266167c5b354ab0db1dc225578494917fe53867ef2"
+        );
+
+        fs::remove_file(path).expect("test file should be removable");
+    }
+
+    #[test]
+    fn skips_non_text_file_contents() {
+        let path = std::env::temp_dir().join(format!(
+            "cyberfeed-binary-{}-{}.bin",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::write(&path, [0xff, 0xfe, 0xfd]).expect("test file should be writable");
+
+        let indicators = extract_text_indicators(path.to_str().expect("valid test path"))
+            .expect("binary content should be skipped");
+
+        assert!(indicators.is_empty());
+        fs::remove_file(path).expect("test file should be removable");
     }
 }
