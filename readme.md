@@ -1,155 +1,79 @@
 # CyberFeed
 
-CyberFeed is a Rust-based terminal cybersecurity intelligence CLI that collects and displays data from free threat-intelligence sources.
+CyberFeed is a Rust-based terminal cybersecurity intelligence CLI.
 
-The project is being developed as a practical way to learn Rust through a real application, while working with HTTP APIs, JSON deserialization, error handling, data filtering, modular application design, and terminal-based user interfaces.
+It collects threat-intelligence data from free public sources and presents it in a simple terminal interface. The project is also a practical way for me to learn Rust by building a real application instead of following isolated tutorials.
 
-## Features
+## Current Features
 
 ### Cloudflare Radar
 
-Displays Layer 7 attack telemetry from Cloudflare Radar, including:
+Displays Layer 7 attack telemetry, including:
 
-- Top attack origin countries
-- Top target countries
+- Top attack origins
+- Top attack targets
 - Top origin → target attack pairs
 - Attack percentages
-- Country flags and percentage visualizations
-- Configurable data refresh intervals
+- Country flags
+- Configurable refresh intervals
 
 ### MalwareBazaar
 
-Displays recent malware samples from MalwareBazaar, including available:
+Displays recent malware samples, including:
 
 - File name
 - File type
 - Origin country
-- First-seen timestamp
+- First-seen time
 - SHA-256 hash
 - Malware signature
 - Optional country filtering
 
-The application also indicates whether the feed is currently online or returned an error.
+CyberFeed also converts malware hashes into a common internal `Indicator` model, which is the beginning of the project's investigation architecture.
 
-## Requirements
+## Project Direction
 
-- Rust and Cargo
-- A Cloudflare API token with access to Cloudflare Radar
-- A MalwareBazaar API Auth-Key
+CyberFeed is gradually moving beyond simply displaying threat-intelligence feeds.
 
-## Setup
-
-### 1. Clone the repository
-
-```bash
-git clone git@github.com:Reon-1/Cyberfeed.git
-cd Cyberfeed
-```
-
-### 2. Configure environment variables
-
-Copy the example environment file:
-
-**Linux / macOS / Git Bash**
-
-```bash
-cp .env.example .env
-```
-
-**Windows Command Prompt**
-
-```cmd
-copy .env.example .env
-```
-
-**Windows PowerShell**
-
-```powershell
-Copy-Item .env.example .env
-```
-
-### 3. Add API credentials
-
-Open `.env` and add your credentials:
-
-```ini
-CLOUDFLARE_API_TOKEN=your_cloudflare_api_token
-MALWAREBAZAAR_AUTH_KEY=your_malwarebazaar_auth_key
-```
-
-#### Cloudflare
-
-Create an API token through your Cloudflare Dashboard with the permissions required to access Cloudflare Radar data.
-
-#### MalwareBazaar
-
-Obtain an API Auth-Key through MalwareBazaar and add it to the `MALWAREBAZAAR_AUTH_KEY` variable.
-
-> **Never commit your `.env` file or expose your API credentials publicly.**
-
-The `.env` file should remain local and should not be committed to Git.
-
-### 4. Build and run
-
-With Rust installed, launch CyberFeed with:
-
-```bash
-cargo run
-```
-
-## Usage
-
-After launching, CyberFeed presents the main menu:
+The long-term goal is to build a lightweight defensive investigation tool that can:
 
 ```text
-[1] Cloudflare Radar
-[2] MalwareBazaar
-[0] Exit
+Collect evidence
+      ↓
+Extract indicators
+      ↓
+Enrich indicators with threat intelligence
+      ↓
+Correlate information
+      ↓
+Help investigate what happened
 ```
 
-### Cloudflare Radar
+The project is being developed incrementally, one piece at a time.
 
-The Cloudflare Radar menu provides:
+## Data Sources
 
-```text
-[1] Top attack origins
-[2] Top attack targets
-[3] Top attack pairs
-[0] Back
-```
+Currently:
 
-For live feeds, you can select a refresh interval:
+- [Cloudflare Radar](https://radar.cloudflare.com/)
+- [MalwareBazaar](https://bazaar.abuse.ch/)
 
-- 5 seconds
-- 10 seconds
-- 30 seconds
-- 1 minute
-- 5 minutes
+Possible future sources include:
 
-CyberFeed refreshes the selected feed multiple times before returning to the menu.
-
-### MalwareBazaar
-
-The MalwareBazaar feed retrieves recent malware samples and displays available metadata such as:
-
-- File information
-- File type
-- Origin country
-- First-seen timestamp
-- SHA-256 hash
-- Malware signature
-
-A country filter can also be used to narrow the displayed samples.
+- URLhaus
+- ThreatFox
+- NVD / CVE data
+- CISA KEV
 
 ## Project Structure
 
 ```text
 Cyberfeed/
-│
 ├── src/
 │   ├── main.rs
 │   ├── cloudflare.rs
 │   ├── malwarebazaar.rs
+│   ├── indicator.rs
 │   └── ui.rs
 │
 ├── .env.example
@@ -158,75 +82,77 @@ Cyberfeed/
 └── README.md
 ```
 
-### Module responsibilities
+### Modules
 
 **`main.rs`**
-
-Acts as the main entry point and coordinates the application flow, menus, configuration, and API client.
+Application entry point and coordinator.
 
 **`cloudflare.rs`**
-
-Handles requests to the Cloudflare Radar API, deserializes the responses, processes attack telemetry, and prepares the data for display.
+Handles Cloudflare Radar requests and attack telemetry.
 
 **`malwarebazaar.rs`**
+Handles MalwareBazaar requests and malware sample data.
 
-Handles communication with the MalwareBazaar API, deserializes malware sample data, applies filtering, and prepares results for display.
+**`indicator.rs`**
+Defines CyberFeed's common indicator model for hashes, IP addresses, and domains.
 
 **`ui.rs`**
+Contains reusable terminal UI helpers.
 
-Contains reusable terminal UI helpers such as menus, boxes, text formatting, input handling, screen clearing, and refresh-related display utilities.
+## Requirements
 
-## Data Sources
+- Rust
+- Cargo
+- Cloudflare Radar API token
+- MalwareBazaar API key
 
-CyberFeed currently integrates:
+## Setup
 
-- [Cloudflare Radar](https://radar.cloudflare.com/)
-- [MalwareBazaar](https://bazaar.abuse.ch/)
+Create a `.env` file based on `.env.example`:
 
-These services provide cybersecurity and threat-intelligence data through their respective APIs.
+```env
+CLOUDFLARE_API_TOKEN=your_cloudflare_api_token
+MALWAREBAZAAR_AUTH_KEY=your_malwarebazaar_auth_key
+```
 
-## Project Status
+Then run:
 
-CyberFeed is an ongoing learning project and an experimental terminal-based threat-intelligence platform written in Rust.
+```bash
+cargo run
+```
 
-The project is intentionally being developed incrementally: new data sources and functionality are added as the application and the developer's understanding of Rust evolve.
-
-Potential future integrations include:
-
-- URLhaus
-- ThreatFox
-- NVD / CVE data
-- CISA Known Exploited Vulnerabilities (KEV)
-
-Future development may also include improvements to error handling, data organization, testing, configuration, and the terminal interface as the project grows.
+Never commit your `.env` file or expose your API credentials.
 
 ## Learning Goals
 
-CyberFeed is also being used to explore practical Rust development concepts, including:
+CyberFeed is primarily a Rust learning project.
 
-- Rust modules and project organization
+Through the project, I am learning how to work with:
+
+- Rust modules
 - Structs and enums
-- `Option` and `Result`
 - Ownership and borrowing
+- `Option` and `Result`
 - Collections such as `Vec`
 - Iterators and filtering
-- HTTP requests with `reqwest`
-- JSON deserialization with `serde`
-- Environment variables and configuration
+- HTTP APIs
+- JSON deserialization
 - Error handling
-- Terminal application design
-- Git and incremental software development
+- Environment variables
+- Terminal applications
+- Project architecture
+- Git and incremental development
 
-The goal is not simply to build a working CLI, but to understand how the pieces of a real Rust application fit together.
+The goal is not just to make CyberFeed work, but to understand how the parts of a real Rust application fit together.
+
+## Status
+
+CyberFeed is an active work in progress.
+
+The current focus is building the foundation for a small, local-first defensive investigation tool while continuing to learn Rust through practical development.
 
 ## Disclaimer
 
 CyberFeed is intended for educational, research, and defensive cybersecurity purposes.
 
-The data displayed by CyberFeed comes from external threat-intelligence providers and may be delayed, incomplete, unavailable, or subject to changes in their APIs.
-
-CyberFeed does not guarantee the accuracy or completeness of information provided by external sources.
-
-## License
-
-This project is currently intended for educational, learning, and research purposes.
+Threat-intelligence data comes from external providers and may be incomplete, delayed, unavailable, or change without notice.

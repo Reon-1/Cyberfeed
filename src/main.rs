@@ -1,4 +1,5 @@
 mod cloudflare;
+mod indicator;
 mod malwarebazaar;
 mod ui;
 
