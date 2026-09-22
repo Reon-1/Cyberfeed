@@ -1,5 +1,12 @@
 pub const INNER_WIDTH: usize = 62;
 
+pub fn header(title: &str, subtitle: &str) {
+    println!("╔══════════════════════════════════════════════════════════════╗");
+    centered_box_line(title);
+    centered_box_line(subtitle);
+    println!("╠══════════════════════════════════════════════════════════════╣");
+}
+
 pub fn box_line(text: &str) {
     println!("║{:width$}║", truncate(text), width = INNER_WIDTH);
 }
