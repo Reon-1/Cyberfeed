@@ -1,41 +1,21 @@
 # CyberFeed
 
-CyberFeed is a Rust-based terminal cybersecurity intelligence CLI.
+CyberFeed is a Rust-based terminal cybersecurity intelligence CLI built as a practical Rust learning project.
 
-It collects threat-intelligence data from free public sources and presents it in a simple terminal interface. The project is also a practical way for me to learn Rust by building a real application instead of following isolated tutorials.
+It collects information from free public threat-intelligence sources, analyzes local evidence such as files, and provides a foundation for investigating suspicious activity from the terminal.
 
-## Current Features
+The project started as a simple threat-intelligence feed viewer and is gradually evolving into a lightweight, local-first defensive investigation tool.
 
-### Cloudflare Radar
+> **CyberFeed is a learning project.**
+> The goal is not only to make the tool work, but to understand how a real Rust application is designed, structured, and developed incrementally.
 
-Displays Layer 7 attack telemetry, including:
+---
 
-- Top attack origins
-- Top attack targets
-- Top origin → target attack pairs
-- Attack percentages
-- Country flags
-- Configurable refresh intervals
+## What CyberFeed Is Becoming
 
-### MalwareBazaar
+The long-term goal is to make CyberFeed useful when investigating something suspicious on a local system.
 
-Displays recent malware samples, including:
-
-- File name
-- File type
-- Origin country
-- First-seen time
-- SHA-256 hash
-- Malware signature
-- Optional country filtering
-
-CyberFeed also converts malware hashes into a common internal `Indicator` model, which is the beginning of the project's investigation architecture.
-
-## Project Direction
-
-CyberFeed is gradually moving beyond simply displaying threat-intelligence feeds.
-
-The long-term goal is to build a lightweight defensive investigation tool that can:
+The general workflow is:
 
 ```text
 Collect evidence
@@ -46,58 +26,277 @@ Enrich indicators with threat intelligence
       ↓
 Correlate information
       ↓
-Help investigate what happened
+Understand what happened
 ```
 
-The project is being developed incrementally, one piece at a time.
+For example, a future investigation could start with a suspicious file:
+
+```text
+Suspicious file
+      ↓
+Calculate SHA-256
+      ↓
+Create an Indicator
+      ↓
+Query threat-intelligence sources
+      ↓
+Collect results
+      ↓
+Build an investigation
+```
+
+This architecture is being developed incrementally rather than attempting to build a complete security platform all at once.
+
+---
+
+## Current Features
+
+### Cloudflare Radar
+
+CyberFeed can retrieve and display Layer 7 attack telemetry from Cloudflare Radar, including:
+
+- Top attack origins
+- Top attack targets
+- Top origin → target attack pairs
+- Attack percentages
+- Country flags
+- Configurable refresh intervals
+
+Cloudflare Radar currently serves primarily as a **threat-intelligence data source** within CyberFeed.
+
+### MalwareBazaar
+
+CyberFeed can retrieve recent malware samples from MalwareBazaar, including:
+
+- File name
+- File type
+- Origin country
+- First-seen time
+- SHA-256 hash
+- Malware signature
+- Optional country filtering
+
+CyberFeed can also use a SHA-256 hash to perform a specific MalwareBazaar lookup.
+
+Malware hashes can be converted into CyberFeed's common `Indicator` model, allowing threat-intelligence data to become part of an investigation.
+
+### Local File Investigation
+
+CyberFeed can inspect a local file and collect basic evidence such as:
+
+- File name
+- File size
+- SHA-256 hash
+
+The file is read as data for hashing; CyberFeed does not execute the file.
+
+The resulting SHA-256 can then be represented as a `Hash` indicator and investigated through supported threat-intelligence sources.
+
+### Indicators
+
+CyberFeed uses a common internal `Indicator` model to represent pieces of security-relevant evidence.
+
+Currently supported indicator types are:
+
+```text
+Hash
+IP
+Domain
+```
+
+An indicator consists of:
+
+```text
+Value
++
+Indicator Type
+```
+
+For example:
+
+```text
+abc123...       → Hash
+192.168.1.10   → IP
+example.com    → Domain
+```
+
+This common model is the foundation for the project's investigation and correlation architecture.
+
+### Investigations
+
+CyberFeed is beginning to organize collected indicators into an investigation.
+
+An investigation can contain multiple indicators gathered from different sources.
+
+For example:
+
+```text
+Investigation
+├── Hash
+├── IP
+├── Domain
+└── Hash
+```
+
+The investigation system is currently a foundation for future correlation and enrichment features rather than a finished investigation engine.
+
+---
+
+## Project Architecture
+
+CyberFeed is intentionally separated into modules based on responsibility.
+
+```text
+CyberFeed
+│
+├── main.rs
+│   └── Application entry point
+│
+├── app.rs
+│   └── Application flow and coordination
+│
+├── file.rs
+│   └── Local file inspection and hashing
+│
+├── indicator.rs
+│   └── Common indicator model
+│
+├── investigation.rs
+│   └── Investigation and collected evidence
+│
+├── cloudflare.rs
+│   └── Cloudflare Radar integration
+│
+├── malwarebazaar.rs
+│   └── MalwareBazaar integration
+│
+└── ui.rs
+    └── Reusable terminal UI helpers
+```
+
+The modules have deliberately different responsibilities.
+
+### `main.rs`
+
+The entry point of the application.
+
+It initializes the application and its required configuration before handing control to the application layer.
+
+### `app.rs`
+
+Coordinates the application.
+
+It handles the user-facing application flow and connects the different parts of CyberFeed together.
+
+### `file.rs`
+
+Handles local file inspection.
+
+It is responsible for collecting basic file information and calculating SHA-256 hashes.
+
+### `indicator.rs`
+
+Defines the common indicator model used throughout CyberFeed.
+
+Currently:
+
+```rust
+Hash
+IP
+Domain
+```
+
+### `investigation.rs`
+
+Represents an investigation and stores indicators collected during that investigation.
+
+### `cloudflare.rs`
+
+Handles Cloudflare Radar API requests, response structures, and attack telemetry.
+
+### `malwarebazaar.rs`
+
+Handles MalwareBazaar API requests, malware sample data, and hash lookups.
+
+### `ui.rs`
+
+Contains reusable terminal UI components used to keep the application's interface consistent.
+
+---
 
 ## Data Sources
 
-Currently:
+### Currently Used
 
 - [Cloudflare Radar](https://radar.cloudflare.com/)
 - [MalwareBazaar](https://bazaar.abuse.ch/)
 
-Possible future sources include:
+### Potential Future Sources
+
+The project may eventually integrate additional free public sources such as:
 
 - URLhaus
 - ThreatFox
 - NVD / CVE data
-- CISA KEV
+- CISA Known Exploited Vulnerabilities (KEV)
 
-## Project Structure
+Future integrations will be added only as the investigation architecture develops.
+
+---
+
+## Learning Goals
+
+CyberFeed is primarily a **Rust learning project built around a real application**.
+
+Instead of learning Rust only through isolated exercises, the project is being used to understand how the language is applied in a larger program.
+
+Areas currently being learned include:
+
+- Rust modules
+- Structs and enums
+- Ownership and borrowing
+- References
+- `Option` and `Result`
+- `Vec` and other collections
+- Iterators and filtering
+- Generics
+- HTTP requests
+- JSON deserialization
+- Error handling
+- Environment variables
+- File I/O
+- Hashing
+- Terminal application development
+- Application architecture
+- Git and incremental development
+
+A major goal is understanding **why the code is structured the way it is**, not simply getting code that works.
+
+---
+
+## Development Philosophy
+
+CyberFeed is being developed incrementally.
+
+The project deliberately avoids trying to implement every cybersecurity feature at once.
+
+The general approach is:
 
 ```text
-Cyberfeed/
-├── src/
-│   ├── main.rs
-│   ├── cloudflare.rs
-│   ├── malwarebazaar.rs
-│   ├── indicator.rs
-│   └── ui.rs
-│
-├── .env.example
-├── Cargo.toml
-├── Cargo.lock
-└── README.md
+Build something small
+      ↓
+Understand it
+      ↓
+Test it
+      ↓
+Improve the architecture
+      ↓
+Add the next capability
 ```
 
-### Modules
+The project is also intended to document the process of learning Rust through a real-world application, including the parts that are difficult, confusing, or require architectural changes.
 
-**`main.rs`**
-Application entry point and coordinator.
-
-**`cloudflare.rs`**
-Handles Cloudflare Radar requests and attack telemetry.
-
-**`malwarebazaar.rs`**
-Handles MalwareBazaar requests and malware sample data.
-
-**`indicator.rs`**
-Defines CyberFeed's common indicator model for hashes, IP addresses, and domains.
-
-**`ui.rs`**
-Contains reusable terminal UI helpers.
+---
 
 ## Requirements
 
@@ -106,9 +305,11 @@ Contains reusable terminal UI helpers.
 - Cloudflare Radar API token
 - MalwareBazaar API key
 
+---
+
 ## Setup
 
-Create a `.env` file based on `.env.example`:
+Clone the repository and create a `.env` file based on `.env.example`.
 
 ```env
 CLOUDFLARE_API_TOKEN=your_cloudflare_api_token
@@ -121,38 +322,44 @@ Then run:
 cargo run
 ```
 
-Never commit your `.env` file or expose your API credentials.
+### Security
 
-## Learning Goals
+Never commit your `.env` file or expose API credentials.
 
-CyberFeed is primarily a Rust learning project.
+Keep secrets in environment variables and make sure `.env` is included in `.gitignore`.
 
-Through the project, I am learning how to work with:
+---
 
-- Rust modules
-- Structs and enums
-- Ownership and borrowing
-- `Option` and `Result`
-- Collections such as `Vec`
-- Iterators and filtering
-- HTTP APIs
-- JSON deserialization
-- Error handling
-- Environment variables
-- Terminal applications
-- Project architecture
-- Git and incremental development
+## Project Status
 
-The goal is not just to make CyberFeed work, but to understand how the parts of a real Rust application fit together.
+CyberFeed is an **active work in progress**.
 
-## Status
+The project is currently transitioning from a threat-intelligence feed viewer into the foundation of a small defensive investigation tool.
 
-CyberFeed is an active work in progress.
+The current architectural focus is:
 
-The current focus is building the foundation for a small, local-first defensive investigation tool while continuing to learn Rust through practical development.
+```text
+Local Evidence
+      ↓
+Indicators
+      ↓
+Investigation
+      ↓
+Threat Intelligence
+      ↓
+Enrichment & Correlation
+```
+
+Many parts of the long-term investigation workflow are not implemented yet.
+
+The project will continue to evolve one feature at a time while the underlying Rust concepts are learned and understood.
+
+---
 
 ## Disclaimer
 
 CyberFeed is intended for educational, research, and defensive cybersecurity purposes.
 
-Threat-intelligence data comes from external providers and may be incomplete, delayed, unavailable, or change without notice.
+Threat-intelligence information is provided by external services and may be incomplete, inaccurate, delayed, unavailable, or subject to change.
+
+CyberFeed should not be treated as a definitive source of security conclusions. Any investigation or security decision should be validated using appropriate additional evidence and trusted sources.
