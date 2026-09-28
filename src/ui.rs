@@ -1,10 +1,13 @@
 use std::fmt::Display;
 
-pub const INNER_WIDTH: usize = 62;
+pub const INNER_WIDTH: usize = 80;
 const FIELD_LABEL_WIDTH: usize = 11;
 const FIELD_PREFIX_WIDTH: usize = 2;
-const FIELD_SEPARATOR_WIDTH: usize = 1;
+const FIELD_SEPARATOR_WIDTH: usize = 3;
 const STATUS_LABEL_WIDTH: usize = 12;
+const INDICATOR_INDEX_WIDTH: usize = 4;
+const INDICATOR_TYPE_WIDTH: usize = 8;
+const INDICATOR_PREFIX_WIDTH: usize = 16;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -88,20 +91,44 @@ pub fn field(label: &str, value: impl Display) {
 
     for (index, line) in lines.iter().enumerate() {
         if index == 0 {
-            box_line(&format!("  {label:<FIELD_LABEL_WIDTH$} {line}"));
+            box_line(&format!("  {label:<FIELD_LABEL_WIDTH$} : {line}"));
         } else {
-            box_line(&format!("  {:<FIELD_LABEL_WIDTH$} {line}", ""));
+            box_line(&format!("  {:<FIELD_LABEL_WIDTH$}   {line}", ""));
         }
     }
 }
 
-pub fn value(value: impl Display) {
-    let value = value.to_string();
-    let value_width = INNER_WIDTH.saturating_sub(FIELD_PREFIX_WIDTH).max(1);
+pub fn indicator_header() {
+    box_line(&format!(
+        "  {:<INDICATOR_INDEX_WIDTH$} {:<INDICATOR_TYPE_WIDTH$} VALUE",
+        "#", "TYPE"
+    ));
+}
 
-    for line in wrap_text(&value, value_width) {
-        box_line(&format!("  {line}"));
+pub fn indicator_row(index: usize, indicator_type: &str, indicator_value: &str) {
+    let value_width = INNER_WIDTH.saturating_sub(INDICATOR_PREFIX_WIDTH).max(1);
+    let lines = wrap_text(indicator_value, value_width);
+
+    for (line_index, line) in lines.iter().enumerate() {
+        if line_index == 0 {
+            box_line(&format!(
+                "  {index:<INDICATOR_INDEX_WIDTH$} {indicator_type:<INDICATOR_TYPE_WIDTH$} {line}"
+            ));
+        } else {
+            box_line(&format!("{}{line}", " ".repeat(INDICATOR_PREFIX_WIDTH)));
+        }
     }
+}
+
+pub fn indicator_details(indicator_type: &str, indicator_value: &str) {
+    field("Type", indicator_type);
+    field("Value", indicator_value);
+}
+
+pub fn navigation_footer(key: &str, action: &str) {
+    box_line("");
+    divider();
+    box_line(&format!("  {ACCENT}{key}{RESET}  {MUTED}{action}{RESET}"));
 }
 
 pub fn status(label: &str, value: &str, kind: Status) {
@@ -113,14 +140,8 @@ pub fn status(label: &str, value: &str, kind: Status) {
     };
 
     box_line(&format!(
-        "  {color}{symbol}{RESET} {BOLD}{label:<STATUS_LABEL_WIDTH$}{RESET} {value}"
+        "  {color}{symbol}{RESET} {BOLD}{label:<STATUS_LABEL_WIDTH$}{RESET} : {value}"
     ));
-}
-
-pub fn indicator(index: usize, indicator_type: &str, indicator_value: &str) {
-    box_line("");
-    box_line(&format!("  [{index}] {indicator_type}"));
-    value(indicator_value);
 }
 
 pub fn warning(message: &str) {
@@ -264,8 +285,16 @@ mod tests {
     #[test]
     fn preserves_padding_when_line_fits() {
         assert_eq!(
-            wrap_text("  Name       test.txt", 62),
-            ["  Name       test.txt"]
+            wrap_text("  Name       : test.txt", 80),
+            ["  Name       : test.txt"]
         );
+    }
+
+    #[test]
+    fn keeps_a_sha256_value_on_one_line_when_the_value_column_allows_it() {
+        let hash = "226a723ffb4a91d9950a8b266167c5b354ab0db1dc225578494917fe53867ef2";
+
+        assert_eq!(wrap_text(hash, 64), [hash]);
+        assert_eq!(wrap_text(hash, 32).concat(), hash);
     }
 }

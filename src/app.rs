@@ -111,8 +111,8 @@ fn investigate_file(client: &Client, auth_key: &str, investigation: &mut Investi
     ui::box_line("");
     ui::box_line("  The file will be read only as data for hashing and text inspection.");
     ui::box_line("  CyberFeed will not execute or upload the file.");
-    ui::box_line("  Enter 0 to cancel and return to the previous menu.");
-    ui::box_line("");
+    ui::navigation_footer("0", "Back / cancel");
+    close_box();
 
     let path = read_input("  File path: ", true);
 
@@ -147,11 +147,10 @@ fn investigate_file(client: &Client, auth_key: &str, investigation: &mut Investi
     ui::status("STATUS", "Checking hash...", ui::Status::Neutral);
 
     match lookup_malware_hash(client, auth_key, &indicator.value) {
-        Ok(sample) => {
+        Ok(result) => {
             ui::section("FILE RESULT");
-            ui::field("Type", indicator.indicator_type.as_str());
-            ui::field("Value", &indicator.value);
-            display_hash_lookup(indicator, sample.as_ref());
+            ui::indicator_details(indicator.indicator_type.as_str(), &indicator.value);
+            display_hash_lookup(&result);
         }
         Err(error) => {
             ui::section("LOOKUP FAILED");
@@ -171,16 +170,17 @@ fn investigate_file(client: &Client, auth_key: &str, investigation: &mut Investi
                     .last()
                     .expect("extracted indicator was just added");
 
-                ui::indicator(
+                ui::indicator_row(
                     index + 1,
                     extracted.indicator_type.as_str(),
                     &extracted.value,
                 );
+                ui::box_line("");
 
                 if is_hash {
                     ui::field("Source", "MalwareBazaar");
                     match lookup_malware_hash(client, auth_key, &extracted.value) {
-                        Ok(sample) => display_hash_lookup(extracted, sample.as_ref()),
+                        Ok(result) => display_hash_lookup(&result),
                         Err(error) => {
                             ui::section("LOOKUP FAILED");
                             ui::error("MalwareBazaar lookup failed.");
@@ -190,6 +190,8 @@ fn investigate_file(client: &Client, auth_key: &str, investigation: &mut Investi
                 } else {
                     ui::field("Lookup", "No connected source is available yet.");
                 }
+
+                ui::box_line("");
             }
         }
         Ok(_) => ui::box_line("  No indicators found in readable text content."),
@@ -216,8 +218,8 @@ fn check_indicator(client: &Client, auth_key: &str, investigation: &mut Investig
     ui::box_line("");
     ui::box_line("  Enter a hash, IP address, or domain.");
     ui::box_line("  CyberFeed will identify the type automatically.");
-    ui::box_line("  Enter 0 to cancel and return to the previous menu.");
-    ui::box_line("");
+    ui::navigation_footer("0", "Back / cancel");
+    close_box();
 
     let value = read_input("  Value: ", false);
 
@@ -247,8 +249,7 @@ fn check_indicator(client: &Client, auth_key: &str, investigation: &mut Investig
         clear_screen();
         ui::header("INDICATOR CHECK", "Evidence saved to this investigation");
         ui::section("INDICATOR");
-        ui::field("Type", &type_name);
-        ui::field("Value", &value);
+        ui::indicator_details(&type_name, &value);
         ui::section("LOOKUP STATUS");
         ui::status("LOOKUP", "NOT AVAILABLE", ui::Status::Warning);
         ui::warning("No threat-intelligence source is connected for this type yet.");
@@ -261,14 +262,13 @@ fn check_indicator(client: &Client, auth_key: &str, investigation: &mut Investig
     clear_screen();
     ui::header("INDICATOR CHECK", "Checking this hash with MalwareBazaar");
     ui::section("INDICATOR");
-    ui::field("Type", &type_name);
-    ui::field("Value", &value);
+    ui::indicator_details(&type_name, &value);
     ui::section("THREAT INTELLIGENCE");
     ui::field("Source", "MalwareBazaar");
     ui::status("STATUS", "Checking...", ui::Status::Neutral);
 
     match lookup_malware_hash(client, auth_key, &indicator.value) {
-        Ok(sample) => display_hash_lookup(indicator, sample.as_ref()),
+        Ok(result) => display_hash_lookup(&result),
         Err(error) => {
             ui::section("LOOKUP FAILED");
             ui::error("MalwareBazaar lookup failed.");
@@ -375,7 +375,7 @@ fn filter_malware_samples(client: &Client, auth_key: &str, investigation: &mut I
     clear_screen();
     ui::header("MALWAREBAZAAR", "Filter recent samples by origin country");
     ui::box_line("  Enter a two-letter country code (for example, NP).");
-    ui::box_line("  Enter 0 to cancel and return to the previous menu.");
+    ui::navigation_footer("0", "Back / cancel");
     close_box();
 
     let country = read_input("\n  Country code: ", false).to_uppercase();

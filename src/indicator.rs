@@ -12,9 +12,9 @@ pub enum IndicatorType {
 impl IndicatorType {
     pub fn as_str(&self) -> &str {
         match self {
-            Self::Hash => "Hash",
+            Self::Hash => "HASH",
             Self::IP => "IP",
-            Self::Domain => "Domain",
+            Self::Domain => "DOMAIN",
         }
     }
 }

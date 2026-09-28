@@ -34,16 +34,15 @@ impl Investigation {
             return;
         }
 
-        ui::box_line("  #   TYPE       VALUE");
-        ui::box_line("  ──────────────────────────────────────────────────────────");
+        ui::indicator_header();
+        ui::divider();
 
         for (index, indicator) in self.indicators.iter().enumerate() {
-            ui::box_line(&format!(
-                "  {:<3} {:<10} {}",
+            ui::indicator_row(
                 index + 1,
                 indicator.indicator_type.as_str(),
-                indicator.value
-            ));
+                &indicator.value,
+            );
         }
     }
 }
