@@ -8,6 +8,24 @@ It collects local evidence, extracts security indicators, and enriches supported
 >
 > The goal is not only to make the tool work, but to understand how a real Rust application is structured, tested, and extended incrementally.
 
+## Screenshots
+
+### Main Menu
+
+![CyberFeed main menu](docs/screenshots/main_menu.png)
+
+### Local File Investigation
+
+![CyberFeed local file investigation](docs/screenshots/local_file_investigation.png)
+
+### Collected Indicators
+
+![CyberFeed collected indicators](docs/screenshots/collected_indicators.png)
+
+### Threat Intelligence
+
+![CyberFeed threat intelligence](docs/screenshots/threat_intelligence.png)
+
 ---
 
 ## What CyberFeed Is Becoming
