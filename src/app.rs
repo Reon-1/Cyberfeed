@@ -9,11 +9,32 @@ use crate::malwarebazaar::{
     display_hash_lookup, display_malware_data, fetch_malware_data, lookup_malware_hash,
 };
 use crate::ui;
+use crossterm::event::{self, Event, KeyCode};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use reqwest::blocking::Client;
+use rustyline::completion::FilenameCompleter;
+use rustyline::error::ReadlineError;
+use rustyline::highlight::MatchingBracketHighlighter;
+use rustyline::hint::HistoryHinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::MatchingBracketValidator;
+use rustyline::{Completer, Config, Editor, Helper, Highlighter, Hinter, Validator};
 use std::io::{self, Write};
 use std::net::IpAddr;
 use std::thread::sleep;
 use std::time::Duration;
+
+#[derive(Completer, Helper, Highlighter, Hinter, Validator)]
+struct PathHelper {
+    #[rustyline(Completer)]
+    completer: FilenameCompleter,
+    #[rustyline(Highlighter)]
+    highlighter: MatchingBracketHighlighter,
+    #[rustyline(Hinter)]
+    hinter: HistoryHinter,
+    #[rustyline(Validator)]
+    validator: MatchingBracketValidator,
+}
 
 pub fn run(client: &Client, cloudflare_token: &str, malwarebazaar_auth_key: &str) {
     let mut investigation = Investigation::new();
@@ -38,10 +59,7 @@ pub fn run(client: &Client, cloudflare_token: &str, malwarebazaar_auth_key: &str
         ui::box_line("");
         close_box();
 
-        print!("\n  Select an option: ");
-        flush();
-
-        match read_input().as_str() {
+        match read_input("\n  Select an option: ", false).as_str() {
             "1" => investigate_file(client, malwarebazaar_auth_key, &mut investigation),
             "2" => investigation_menu(client, malwarebazaar_auth_key, &mut investigation),
             "3" => threat_intelligence_menu(
@@ -77,10 +95,7 @@ fn investigation_menu(client: &Client, auth_key: &str, investigation: &mut Inves
         ui::box_line("");
         close_box();
 
-        print!("\n  Select an option: ");
-        flush();
-
-        match read_input().as_str() {
+        match read_input("\n  Select an option: ", false).as_str() {
             "1" => investigate_file(client, auth_key, investigation),
             "2" => check_indicator(client, auth_key, investigation),
             "3" => view_indicators(investigation),
@@ -96,11 +111,14 @@ fn investigate_file(client: &Client, auth_key: &str, investigation: &mut Investi
     ui::box_line("");
     ui::box_line("  The file will be read only as data for hashing and text inspection.");
     ui::box_line("  CyberFeed will not execute or upload the file.");
+    ui::box_line("  Enter 0 to cancel and return to the previous menu.");
     ui::box_line("");
 
-    print!("  File path: ");
-    flush();
-    let path = read_input();
+    let path = read_input("  File path: ", true);
+
+    if path == "0" {
+        return;
+    }
 
     if path.is_empty() {
         show_error("A file path is required.");
@@ -198,11 +216,14 @@ fn check_indicator(client: &Client, auth_key: &str, investigation: &mut Investig
     ui::box_line("");
     ui::box_line("  Enter a hash, IP address, or domain.");
     ui::box_line("  CyberFeed will identify the type automatically.");
+    ui::box_line("  Enter 0 to cancel and return to the previous menu.");
     ui::box_line("");
 
-    print!("  Value: ");
-    flush();
-    let value = read_input();
+    let value = read_input("  Value: ", false);
+
+    if value == "0" {
+        return;
+    }
 
     if value.is_empty() {
         show_error("A hash, IP address, or domain is required.");
@@ -309,10 +330,7 @@ fn threat_intelligence_menu(
         ui::box_line("");
         close_box();
 
-        print!("\n  Select an option: ");
-        flush();
-
-        match read_input().as_str() {
+        match read_input("\n  Select an option: ", false).as_str() {
             "1" => malwarebazaar_menu(client, auth_key, investigation),
             "2" => cloudflare_menu(client, cloudflare_token),
             "0" => break,
@@ -337,10 +355,7 @@ fn malwarebazaar_menu(client: &Client, auth_key: &str, investigation: &mut Inves
         ui::box_line("");
         close_box();
 
-        print!("\n  Select an option: ");
-        flush();
-
-        match read_input().as_str() {
+        match read_input("\n  Select an option: ", false).as_str() {
             "1" => match fetch_malware_data(client, auth_key) {
                 Ok(data) => {
                     clear_screen();
@@ -357,9 +372,17 @@ fn malwarebazaar_menu(client: &Client, auth_key: &str, investigation: &mut Inves
 }
 
 fn filter_malware_samples(client: &Client, auth_key: &str, investigation: &mut Investigation) {
-    print!("\n  Enter a two-letter country code (for example, NP): ");
-    flush();
-    let country = read_input().to_uppercase();
+    clear_screen();
+    ui::header("MALWAREBAZAAR", "Filter recent samples by origin country");
+    ui::box_line("  Enter a two-letter country code (for example, NP).");
+    ui::box_line("  Enter 0 to cancel and return to the previous menu.");
+    close_box();
+
+    let country = read_input("\n  Country code: ", false).to_uppercase();
+
+    if country == "0" {
+        return;
+    }
 
     if country.len() != 2
         || !country
@@ -393,10 +416,7 @@ fn cloudflare_menu(client: &Client, token: &str) {
         ui::box_line("");
         close_box();
 
-        print!("\n  Select an option: ");
-        flush();
-
-        match read_input().as_str() {
+        match read_input("\n  Select an option: ", false).as_str() {
             "1" => run_cloudflare_feed(client, token, 1),
             "2" => run_cloudflare_feed(client, token, 2),
             "3" => run_cloudflare_feed(client, token, 3),
@@ -456,13 +476,48 @@ fn run_cloudflare_feed(client: &Client, token: &str, feed: u8) {
                 format_duration(interval)
             ));
             ui::close_box();
-            sleep(interval);
+
+            if wait_for_cloudflare_refresh(interval) {
+                return;
+            }
         } else {
             ui::centered_box_line("Refresh limit reached");
             close_box();
             pause();
         }
     }
+}
+
+fn wait_for_cloudflare_refresh(interval: Duration) -> bool {
+    if enable_raw_mode().is_err() {
+        sleep(interval);
+        return false;
+    }
+
+    let start = std::time::Instant::now();
+    let cancelled = loop {
+        let Some(remaining) = interval.checked_sub(start.elapsed()) else {
+            break false;
+        };
+
+        let poll_duration = remaining.min(Duration::from_millis(100));
+        match event::poll(poll_duration) {
+            Ok(true) => match event::read() {
+                Ok(Event::Key(key))
+                    if matches!(key.code, KeyCode::Esc | KeyCode::Char('q' | 'Q')) =>
+                {
+                    break true;
+                }
+                Ok(_) => {}
+                Err(_) => break false,
+            },
+            Ok(false) => {}
+            Err(_) => break false,
+        }
+    };
+
+    let _ = disable_raw_mode();
+    cancelled
 }
 
 fn choose_refresh_interval() -> Option<Duration> {
@@ -483,10 +538,7 @@ fn choose_refresh_interval() -> Option<Duration> {
         ui::box_line("");
         close_box();
 
-        print!("\n  Select an option: ");
-        flush();
-
-        match read_input().as_str() {
+        match read_input("\n  Select an option: ", false).as_str() {
             "1" => return Some(Duration::from_secs(5)),
             "2" => return Some(Duration::from_secs(10)),
             "3" => return Some(Duration::from_secs(30)),
@@ -534,12 +586,44 @@ fn clear_screen() {
     flush();
 }
 
-fn read_input() -> String {
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .expect("Failed to read input");
-    input.trim().to_string()
+fn read_input(prompt: &str, path_completion: bool) -> String {
+    let config = Config::builder().history_ignore_space(true).build();
+    if path_completion {
+        let mut editor = match Editor::<PathHelper, DefaultHistory>::with_config(config) {
+            Ok(editor) => editor,
+            Err(error) => {
+                eprintln!("Input error: {error}");
+                return String::from("0");
+            }
+        };
+        editor.set_helper(Some(PathHelper {
+            completer: FilenameCompleter::new(),
+            highlighter: MatchingBracketHighlighter::new(),
+            hinter: HistoryHinter::new(),
+            validator: MatchingBracketValidator::new(),
+        }));
+        return read_editor_line(&mut editor, prompt);
+    } else {
+        let mut editor = match Editor::<(), DefaultHistory>::with_config(config) {
+            Ok(editor) => editor,
+            Err(error) => {
+                eprintln!("Input error: {error}");
+                return String::from("0");
+            }
+        };
+        return read_editor_line(&mut editor, prompt);
+    }
+}
+
+fn read_editor_line<H: Helper>(editor: &mut Editor<H, DefaultHistory>, prompt: &str) -> String {
+    match editor.readline(prompt) {
+        Ok(input) => input.trim().to_string(),
+        Err(ReadlineError::Interrupted | ReadlineError::Eof) => String::from("0"),
+        Err(error) => {
+            eprintln!("Input error: {error}");
+            String::from("0")
+        }
+    }
 }
 
 fn pause() {

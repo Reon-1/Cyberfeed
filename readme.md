@@ -489,3 +489,4 @@ CyberFeed is intended for educational, research, and defensive cybersecurity pur
 Threat-intelligence information is provided by external services and may be incomplete, inaccurate, delayed, unavailable, or subject to change.
 
 CyberFeed should not be treated as a definitive source of security conclusions. Any investigation or security decision should be validated using appropriate additional evidence and trusted sources.
+tt
