@@ -49,8 +49,9 @@ pub fn box_line(text: &str) {
     for line in wrap_text(text, INNER_WIDTH) {
         let padding = INNER_WIDTH.saturating_sub(visible_width(&line));
         println!(
-            "{BORDER}║{RESET}{}{BORDER}║{RESET}",
-            format!("{}{}", line, " ".repeat(padding))
+            "{BORDER}║{RESET}{line}{:width$}{BORDER}║{RESET}",
+            "",
+            width = padding
         );
     }
 }

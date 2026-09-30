@@ -1,6 +1,7 @@
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
+use std::fmt;
 
 use crate::ui;
 
@@ -76,6 +77,27 @@ pub struct CloudflareResponse<T> {
     pub result: T,
 }
 
+#[derive(Debug)]
+pub enum CloudflareError {
+    Request(String),
+    Http { status: u16, body: String },
+    Parse(String),
+}
+
+impl fmt::Display for CloudflareError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Request(message) => write!(formatter, "Cloudflare request failed: {message}"),
+            Self::Http { status, body } => {
+                write!(formatter, "Cloudflare returned HTTP {status}: {body}")
+            }
+            Self::Parse(message) => {
+                write!(formatter, "Could not parse Cloudflare response: {message}")
+            }
+        }
+    }
+}
+
 fn parse_f64_from_string<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
     D: Deserializer<'de>,
@@ -89,46 +111,54 @@ where
         .map_err(|error| de::Error::custom(error.to_string()))
 }
 
-pub fn fetch_cloudflare_data(client: &Client, token: &str) -> CloudflareResponse<TopOrigins> {
+pub fn fetch_cloudflare_data(
+    client: &Client,
+    token: &str,
+) -> Result<CloudflareResponse<TopOrigins>, CloudflareError> {
     let url = "https://api.cloudflare.com/client/v4/radar/attacks/layer7/top/locations/origin?dateRange=1d";
-
-    // Send the request with the Cloudflare API token
-    client
-        .get(url)
-        .bearer_auth(token)
-        .send()
-        .expect("Failed to request Cloudflare origin data")
-        .json()
-        .expect("Failed to parse Cloudflare origin response")
+    fetch_json(client, url, token)
 }
 
-pub fn fetch_cloudflare_targets(client: &Client, token: &str) -> CloudflareResponse<TopTargets> {
+pub fn fetch_cloudflare_targets(
+    client: &Client,
+    token: &str,
+) -> Result<CloudflareResponse<TopTargets>, CloudflareError> {
     let url = "https://api.cloudflare.com/client/v4/radar/attacks/layer7/top/locations/target?dateRange=1d";
-
-    // Send the request with the Cloudflare API token
-    client
-        .get(url)
-        .bearer_auth(token)
-        .send()
-        .expect("Failed to request Cloudflare target data")
-        .json()
-        .expect("Failed to parse Cloudflare target response")
+    fetch_json(client, url, token)
 }
 
 pub fn fetch_cloudflare_attack_pairs(
     client: &Client,
     token: &str,
-) -> CloudflareResponse<TopAttackPairs> {
+) -> Result<CloudflareResponse<TopAttackPairs>, CloudflareError> {
     let url = "https://api.cloudflare.com/client/v4/radar/attacks/layer7/top/attacks?limit=5&dateRange=1d&format=json";
+    fetch_json(client, url, token)
+}
 
-    // Send the request with the Cloudflare API token
-    client
+fn fetch_json<T: for<'de> serde::Deserialize<'de>>(
+    client: &Client,
+    url: &str,
+    token: &str,
+) -> Result<CloudflareResponse<T>, CloudflareError> {
+    let response = client
         .get(url)
         .bearer_auth(token)
         .send()
-        .expect("Failed to request Cloudflare attack pair data")
+        .map_err(|error| CloudflareError::Request(error.to_string()))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .unwrap_or_else(|error| format!("could not read response body: {error}"));
+        return Err(CloudflareError::Http {
+            status: status.as_u16(),
+            body,
+        });
+    }
+
+    response
         .json()
-        .expect("Failed to parse Cloudflare attack pair response")
+        .map_err(|error| CloudflareError::Parse(error.to_string()))
 }
 
 pub fn display_top_origins(data: &TopOrigins) {
@@ -236,4 +266,28 @@ fn shorten(text: &str, max_length: usize) -> String {
     let shortened: String = text.chars().take(max_length.saturating_sub(3)).collect();
 
     format!("{}...", shortened)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CloudflareResponse, TopAttackPairs, TopOrigins, TopTargets};
+
+    #[test]
+    fn parses_all_radar_feed_shapes() {
+        let origins: CloudflareResponse<TopOrigins> = serde_json::from_str(
+            r#"{"success":true,"result":{"top_0":[{"originCountryAlpha2":"NP","originCountryName":"Nepal","value":"12.5","rank":1}]}}"#,
+        )
+        .expect("origin response should parse");
+        assert_eq!(origins.result.top_0[0].value, 12.5);
+
+        let targets: CloudflareResponse<TopTargets> =
+            serde_json::from_str(r#"{"success":true,"result":{"top_0":[]}}"#)
+                .expect("target response should parse");
+        assert!(targets.result.top_0.is_empty());
+
+        let pairs: CloudflareResponse<TopAttackPairs> =
+            serde_json::from_str(r#"{"success":true,"result":{"top_0":[]}}"#)
+                .expect("attack pair response should parse");
+        assert!(pairs.result.top_0.is_empty());
+    }
 }

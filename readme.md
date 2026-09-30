@@ -439,7 +439,7 @@ The project is not trying to become a complete security platform immediately. Ea
 
 ## Setup
 
-Clone the repository and create a `.env` file based on `.env.example`.
+Clone the repository and create a local `.env` file with the two required credentials.
 
 ```env
 CLOUDFLARE_API_TOKEN=your_cloudflare_api_token
@@ -508,6 +508,12 @@ The current implementation can already:
 - investigate supported hashes through MalwareBazaar
 - display threat-intelligence results in the terminal
 - browse Cloudflare Radar telemetry
+
+Readable-text extraction recognizes 64-character hexadecimal SHA-256 values,
+while manual indicator input also accepts 32-character and 40-character
+hexadecimal hashes. File investigations read files for hashing and text
+inspection only; files are not executed or uploaded. Investigation data is
+session-only and is discarded when CyberFeed exits.
 
 What is not implemented yet includes persistent investigation history, broader local system telemetry, multiple additional enrichment sources, and richer correlation.
 

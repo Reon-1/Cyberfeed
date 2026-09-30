@@ -16,15 +16,8 @@ impl Investigation {
         self.indicators.extend(indicators);
     }
 
-    pub fn add_indicator(&mut self, value: String, indicator_type: IndicatorType) {
-        self.indicators.push(Indicator {
-            value,
-            indicator_type,
-        });
-    }
-
-    pub fn indicators(&self) -> &[Indicator] {
-        &self.indicators
+    pub fn add_indicator(&mut self, value: impl Into<String>, indicator_type: IndicatorType) {
+        self.indicators.push(Indicator::new(value, indicator_type));
     }
 
     pub fn display_indicators(&self) {

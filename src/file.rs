@@ -1,8 +1,7 @@
-use crate::indicator::{Indicator, IndicatorType};
+use crate::indicator::{EXTRACTED_HASH_LENGTHS, Indicator, classify};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
-use std::net::IpAddr;
 use std::path::Path;
 
 pub struct FileInfo {
@@ -81,42 +80,16 @@ pub fn extract_text_indicators(path_text: &str) -> Result<Vec<Indicator>, String
 
     Ok(text
         .split_whitespace()
-        .filter_map(|token| {
-            Some(token.trim_matches(|character: char| {
+        .map(|token| {
+            token.trim_matches(|character: char| {
                 !character.is_ascii_alphanumeric() && !matches!(character, '.' | '-')
-            }))
+            })
         })
-        .filter_map(indicator_from_token)
+        .filter_map(|token| {
+            classify(token, EXTRACTED_HASH_LENGTHS)
+                .map(|indicator_type| Indicator::new(token, indicator_type))
+        })
         .collect())
-}
-
-fn indicator_from_token(token: &str) -> Option<Indicator> {
-    if token.len() == 64 && token.chars().all(|character| character.is_ascii_hexdigit()) {
-        return Some(Indicator {
-            value: token.to_string(),
-            indicator_type: IndicatorType::Hash,
-        });
-    }
-
-    if token.parse::<IpAddr>().is_ok() {
-        return Some(Indicator {
-            value: token.to_string(),
-            indicator_type: IndicatorType::IP,
-        });
-    }
-
-    let is_domain = token.contains('.')
-        && token.split('.').all(|label| {
-            !label.is_empty()
-                && label
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
-        });
-
-    is_domain.then(|| Indicator {
-        value: token.to_string(),
-        indicator_type: IndicatorType::Domain,
-    })
 }
 
 #[cfg(test)]
