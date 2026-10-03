@@ -166,7 +166,7 @@ pub fn display_top_origins(data: &TopOrigins) {
 
     // Display each country returned by Cloudflare
     for country in &data.top_0 {
-        let flag = country_flag(&country.origin_country_alpha2);
+        let flag = ui::country_flag(&country.origin_country_alpha2);
         let bar = percentage_bar(country.value);
 
         ui::box_line(&format!(
@@ -186,7 +186,7 @@ pub fn display_top_targets(data: &TopTargets) {
 
     // Display each target country returned by Cloudflare
     for country in &data.top_0 {
-        let flag = country_flag(&country.target_country_alpha2);
+        let flag = ui::country_flag(&country.target_country_alpha2);
         let bar = percentage_bar(country.value);
 
         ui::box_line(&format!(
@@ -206,8 +206,8 @@ pub fn display_top_attack_pairs(data: &TopAttackPairs) {
 
     // Display where the attacks are coming from and where they are going
     for pair in &data.top_0 {
-        let origin_flag = country_flag(&pair.origin_country_alpha2);
-        let target_flag = country_flag(&pair.target_country_alpha2);
+        let origin_flag = ui::country_flag(&pair.origin_country_alpha2);
+        let target_flag = ui::country_flag(&pair.target_country_alpha2);
         let bar = percentage_bar(pair.value);
 
         ui::box_line(&format!(
@@ -232,29 +232,6 @@ fn percentage_bar(value: f64) -> String {
     let filled = filled.min(20);
 
     format!("[{}{}]", "█".repeat(filled), "░".repeat(20 - filled))
-}
-
-fn country_flag(code: &str) -> String {
-    // Country flags are made from two regional indicator characters
-    if code.len() != 2 {
-        return "🏳️".to_string();
-    }
-
-    let mut flag = String::new();
-
-    for character in code.to_uppercase().chars() {
-        if !character.is_ascii_uppercase() {
-            return "🏳️".to_string();
-        }
-
-        let regional_indicator = char::from_u32(0x1F1E6 + (character as u32 - 'A' as u32));
-
-        if let Some(regional_indicator) = regional_indicator {
-            flag.push(regional_indicator);
-        }
-    }
-
-    flag
 }
 
 fn shorten(text: &str, max_length: usize) -> String {

@@ -1,23 +1,31 @@
 use crate::indicator::{Indicator, IndicatorType};
 use crate::ui;
+use std::collections::HashSet;
 
 pub struct Investigation {
     indicators: Vec<Indicator>,
+    seen: HashSet<Indicator>,
 }
 
 impl Investigation {
     pub fn new() -> Self {
         Self {
             indicators: Vec::new(),
+            seen: HashSet::new(),
         }
     }
 
     pub fn add_indicators(&mut self, indicators: Vec<Indicator>) {
-        self.indicators.extend(indicators);
+        for indicator in indicators {
+            self.add_indicator(indicator.value, indicator.indicator_type);
+        }
     }
 
     pub fn add_indicator(&mut self, value: impl Into<String>, indicator_type: IndicatorType) {
-        self.indicators.push(Indicator::new(value, indicator_type));
+        let indicator = Indicator::new(value, indicator_type);
+        if self.seen.insert(indicator.clone()) {
+            self.indicators.push(indicator);
+        }
     }
 
     pub fn display_indicators(&self) {
@@ -37,5 +45,23 @@ impl Investigation {
                 &indicator.value,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Investigation;
+    use crate::indicator::IndicatorType;
+
+    #[test]
+    fn duplicate_indicators_are_stored_once_in_insertion_order() {
+        let mut investigation = Investigation::new();
+        investigation.add_indicator("example.com", IndicatorType::Domain);
+        investigation.add_indicator("example.com", IndicatorType::Domain);
+        investigation.add_indicator("192.0.2.1", IndicatorType::IP);
+
+        assert_eq!(investigation.indicators.len(), 2);
+        assert_eq!(investigation.indicators[0].value, "example.com");
+        assert_eq!(investigation.indicators[1].value, "192.0.2.1");
     }
 }

@@ -1,7 +1,7 @@
 use crate::indicator::{EXTRACTED_HASH_LENGTHS, Indicator, classify};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 
 pub struct FileInfo {
@@ -67,29 +67,37 @@ pub fn format_size(bytes: u64) -> String {
 // Read indicators only from content that is safely recognizable as text.
 pub fn extract_text_indicators(path_text: &str) -> Result<Vec<Indicator>, String> {
     let path = Path::new(path_text);
-    let contents =
-        fs::read(path).map_err(|error| format!("Could not read '{}': {error}", path.display()))?;
+    let file = File::open(path)
+        .map_err(|error| format!("Could not read '{}': {error}", path.display()))?;
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let mut indicators = Vec::new();
 
-    let Ok(text) = std::str::from_utf8(&contents) else {
-        return Ok(Vec::new());
-    };
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                if line.contains('\0') {
+                    return Ok(Vec::new());
+                }
 
-    if text.contains('\0') {
-        return Ok(Vec::new());
+                indicators.extend(line.split_whitespace().filter_map(|token| {
+                    let token = token.trim_matches(|character: char| {
+                        !character.is_ascii_alphanumeric() && !matches!(character, '.' | '-')
+                    });
+                    classify(token, EXTRACTED_HASH_LENGTHS)
+                        .map(|indicator_type| Indicator::new(token, indicator_type))
+                }));
+            }
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(format!("Could not read '{}': {error}", path.display()));
+            }
+        }
     }
 
-    Ok(text
-        .split_whitespace()
-        .map(|token| {
-            token.trim_matches(|character: char| {
-                !character.is_ascii_alphanumeric() && !matches!(character, '.' | '-')
-            })
-        })
-        .filter_map(|token| {
-            classify(token, EXTRACTED_HASH_LENGTHS)
-                .map(|indicator_type| Indicator::new(token, indicator_type))
-        })
-        .collect())
+    Ok(indicators)
 }
 
 #[cfg(test)]

@@ -83,6 +83,24 @@ pub fn menu_item(number: &str, title: &str, description: &str) {
     box_line("");
 }
 
+pub fn country_flag(code: &str) -> String {
+    if code.len() != 2 {
+        return "🏳️".to_string();
+    }
+
+    let mut flag = String::new();
+    for character in code.to_uppercase().chars() {
+        if !character.is_ascii_uppercase() {
+            return "🏳️".to_string();
+        }
+        if let Some(regional_indicator) = char::from_u32(0x1F1E6 + (character as u32 - 'A' as u32))
+        {
+            flag.push(regional_indicator);
+        }
+    }
+    flag
+}
+
 pub fn field(label: &str, value: impl Display) {
     let value = value.to_string();
     let value_width = INNER_WIDTH
