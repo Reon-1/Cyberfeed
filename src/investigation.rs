@@ -23,7 +23,8 @@ impl Investigation {
 
     pub fn add_indicator(&mut self, value: impl Into<String>, indicator_type: IndicatorType) {
         let indicator = Indicator::new(value, indicator_type);
-        if self.seen.insert(indicator.clone()) {
+        let key = normalized_key(&indicator);
+        if self.seen.insert(Indicator::new(key, indicator_type)) {
             self.indicators.push(indicator);
         }
     }
@@ -48,6 +49,13 @@ impl Investigation {
     }
 }
 
+fn normalized_key(indicator: &Indicator) -> String {
+    match indicator.indicator_type {
+        IndicatorType::Hash | IndicatorType::Domain => indicator.value.to_ascii_lowercase(),
+        IndicatorType::IP => indicator.value.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Investigation;
@@ -63,5 +71,18 @@ mod tests {
         assert_eq!(investigation.indicators.len(), 2);
         assert_eq!(investigation.indicators[0].value, "example.com");
         assert_eq!(investigation.indicators[1].value, "192.0.2.1");
+    }
+
+    #[test]
+    fn case_variants_of_hashes_and_domains_keep_the_first_value() {
+        let mut investigation = Investigation::new();
+        investigation.add_indicator("ABCDEF", IndicatorType::Hash);
+        investigation.add_indicator("abcdef", IndicatorType::Hash);
+        investigation.add_indicator("Example.COM", IndicatorType::Domain);
+        investigation.add_indicator("example.com", IndicatorType::Domain);
+
+        assert_eq!(investigation.indicators.len(), 2);
+        assert_eq!(investigation.indicators[0].value, "ABCDEF");
+        assert_eq!(investigation.indicators[1].value, "Example.COM");
     }
 }

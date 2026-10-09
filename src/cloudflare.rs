@@ -2,6 +2,7 @@ use reqwest::blocking::Client;
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 use std::fmt;
+use std::io::Read;
 
 use crate::ui;
 
@@ -147,9 +148,7 @@ fn fetch_json<T: for<'de> serde::Deserialize<'de>>(
         .map_err(|error| CloudflareError::Request(error.to_string()))?;
     let status = response.status();
     if !status.is_success() {
-        let body = response
-            .text()
-            .unwrap_or_else(|error| format!("could not read response body: {error}"));
+        let body = read_error_body(response);
         return Err(CloudflareError::Http {
             status: status.as_u16(),
             body,
@@ -159,6 +158,22 @@ fn fetch_json<T: for<'de> serde::Deserialize<'de>>(
     response
         .json()
         .map_err(|error| CloudflareError::Parse(error.to_string()))
+}
+
+fn read_error_body(response: reqwest::blocking::Response) -> String {
+    const MAX_BYTES: u64 = 2048;
+    let mut limited = response.take(MAX_BYTES + 1);
+    let mut bytes = Vec::new();
+    if let Err(error) = limited.read_to_end(&mut bytes) {
+        return format!("could not read response body: {error}");
+    }
+    let truncated = bytes.len() as u64 > MAX_BYTES;
+    bytes.truncate(MAX_BYTES as usize);
+    let mut result = String::from_utf8_lossy(&bytes).into_owned();
+    if truncated {
+        result.push_str("… [truncated]");
+    }
+    result
 }
 
 pub fn display_top_origins(data: &TopOrigins) {
