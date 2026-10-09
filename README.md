@@ -6,6 +6,30 @@ CyberFeed is a defensive cybersecurity investigation CLI written in Rust. It ins
 
 CyberFeed is both a practical investigation tool and a Rust learning project. Its small, explicit modules make it useful for learning how a CLI handles configuration, files, HTTP APIs, terminal input, and tests.
 
+## Screenshots
+
+These are fresh captures of the current application. The file example uses the project's local `src/file.rs`; the app was run without provider credentials, so the MalwareBazaar status shown is **NOT CONFIGURED** and no network lookup was made.
+
+![CyberFeed main menu](docs/screenshots/main-menu-current.png)
+
+*The main menu and its file, investigation, and threat-intelligence workflows.*
+
+![CyberFeed file input](docs/screenshots/file-input-current.png)
+
+*The file prompt explains local handling and the hashes that may be sent to MalwareBazaar when configured.*
+
+![CyberFeed file investigation results](docs/screenshots/file-investigation-current.png)
+
+*A real local inspection showing the file's own SHA-256 separately from extracted indicators, with MalwareBazaar unavailable.*
+
+![CyberFeed collected evidence](docs/screenshots/collected-evidence-current.png)
+
+*Indicators retained in the current application session.*
+
+![CyberFeed report save confirmation](docs/screenshots/report-saved-current.png)
+
+*Successful creation of paired Markdown and JSON reports. The generated report pair was written under `/tmp/reports` for this demonstration.*
+
 ## Current features
 
 ### Local files and indicators
@@ -15,8 +39,9 @@ CyberFeed is both a practical investigation tool and a Rust learning project. It
 - Extract at most 10,000 unique indicators per file; the UI reports when this limit stops further indicator scanning.
 - Manually classify MD5, SHA-1, and SHA-256 hash lengths, IP addresses, and domains.
 - Keep unique evidence in insertion order for the current application session.
+- Enter a path directly or drag a file from a Linux file manager into the path prompt. Matching outer single or double quotes are removed; spaces and internal quote characters are preserved.
 
-File contents are read as data only. CyberFeed does not execute or upload the file. When configured, MalwareBazaar lookups send the file's SHA-256 and extracted SHA-256 hash indicators; extracted IP addresses and domains are collected locally only.
+File contents are read as data only. CyberFeed does not execute or upload the file. Before inspection, the prompt explains that configured MalwareBazaar lookups send the file's SHA-256 and extracted SHA-256 indicators. Extracted IP addresses and domains are collected locally only; no connected enrichment provider currently checks them.
 
 Manual hash input accepts 32, 40, or 64 hexadecimal characters. Text extraction intentionally recognizes only 64-character hexadecimal hashes (SHA-256 length).
 
@@ -26,9 +51,11 @@ With `MALWAREBAZAAR_AUTH_KEY`, CyberFeed can:
 
 - Look up a hash and report `FOUND`, `NOT FOUND`, `INVALID`, or `API ERROR`.
 - Retrieve recent malware samples and optionally filter by country.
-- Automatically look up up to ten unique hashes during one file investigation.
+- Automatically look up at most ten unique hashes per file investigation, counting the original file SHA-256 as the first lookup when MalwareBazaar is configured. Duplicate hashes reuse the existing result and do not cause another request.
 
-A `NOT FOUND` response means MalwareBazaar returned no record. It does not prove that a file is benign.
+After each file investigation, CyberFeed offers to save a paired Markdown and JSON report under `reports/` in the current working directory. It creates this directory when needed and selects unique filenames rather than overwriting existing reports. Reports can contain hashes, extracted IP addresses and domains, and provider results, so treat them as sensitive local files. The JSON report uses schema version 1 and is intended for structured reuse; the Markdown report presents the same findings for people to read.
+
+Reports store the basename (not the absolute source path), size, SHA-256, extraction status, indicators, and each lookup outcome. They distinguish the original file hash from SHA-256 values found inside its contents. The summary counts extracted indicators and extracted-hash lookup outcomes separately; an embedded hash match applies to that hash and is not a verdict on the file containing it. JSON timestamps are Unix seconds in UTC. Markdown and JSON are rendered from the same report data.
 
 ### Cloudflare Radar
 
@@ -41,17 +68,23 @@ With `CLOUDFLARE_API_TOKEN`, CyberFeed displays Cloudflare Radar Layer 7 attack 
 
 Radar is a separate telemetry view. Its data is not an assessment of the file under investigation.
 
-## Screenshots
+## Reading findings and saving reports
 
-![CyberFeed main menu](docs/screenshots/main_menu.png)
+Local file inspection streams the file once to calculate SHA-256 and scan readable UTF-8 text for supported indicators. Binary or non-text content is still hashed, but text extraction is marked as skipped. An empty indicator list means extraction ran and found no supported values; it does not mean that the file is clean. Extraction stops after 10,000 unique indicators and marks that limit in the results.
 
-![Local file investigation](docs/screenshots/local_file_investigation.png)
+`FOUND` means MalwareBazaar returned a record for the queried hash. `NOT FOUND` means it returned no record at lookup time; it does not establish that the hash or file is safe. `INVALID`, `API ERROR`, and `REQUEST ERROR` remain failures, not negative results. `NOT CONFIGURED` means no request was made because the optional credential is missing. Duplicate hashes reuse the earlier result, while hashes beyond the ten-unique-hash cap are marked skipped. The original file hash counts toward that cap.
 
-![Collected indicators](docs/screenshots/collected_indicators.png)
+After the file results, choose whether to save a report. CyberFeed writes paired files with matching names under `reports/` in the process's current working directory, for example `cyberfeed-<file>-<timestamp>.md` and `.json`. It creates the directory, avoids overwriting existing reports, and confirms their paths after both writes succeed. `.gitignore` excludes this directory by default. Treat these local files as sensitive: they contain hashes, indicators, and provider outcomes.
 
-![Threat intelligence menu](docs/screenshots/threat_intelligence.png)
+The Markdown report is for people to read. The JSON report has schema version 1 and stable typed statuses for programmatic use. Both contain the same summary, local findings, and MalwareBazaar results. Neither format includes the absolute source path or credentials. Reports describe evidence only: CyberFeed does not perform full executable analysis, malware detection, structural file-format analysis, IP/domain reputation lookups, or an overall risk verdict. Manual indicators and other session evidence are not automatically included in a file report.
 
-![Cloudflare Radar menu](docs/screenshots/cloudflare_menu.png)
+## Using the menus
+
+The main menu offers **Check a File**, **Investigation**, **Threat Intelligence**, and **Exit**. The Investigation menu lets you add a manual indicator or review evidence collected during the current run. Manual input accepts MD5, SHA-1, and SHA-256 hashes, IP addresses, and domains. Hashes can be checked with MalwareBazaar when configured; IP addresses and domains are classified and retained locally, but have no connected lookup provider. Evidence stays in memory for the current run unless it is part of a saved file report.
+
+Threat Intelligence opens the MalwareBazaar and Cloudflare Radar menus. MalwareBazaar provides recent samples, country filtering, and individual hash lookups. Cloudflare Radar shows general Layer 7 attack origins, targets, and origin-target pairs. Its refresh intervals are 5 seconds, 10 seconds, 30 seconds, 1 minute, or 5 minutes; each live view performs at most five refreshes, and `Esc` or `q` stops the refresh loop. Radar data is not evidence about an individual file.
+
+At the main menu, `0` exits. In submenus, `0` goes back; at file, indicator, country, and report-save prompts, `0` cancels or skips the action. Ctrl+C and EOF act as cancellation at Rustyline prompts. File paths may be typed or dragged in from a Linux file manager; CyberFeed removes one matching pair of outer single or double quotes and preserves spaces within the path. Invalid or inaccessible paths return to the file prompt so the user can retry or cancel.
 
 ## Architecture
 
@@ -64,14 +97,15 @@ Radar is a separate telemetry view. Its data is not an assessment of the file un
 | `app/file_workflow.rs` | Local file investigation, manual indicator checks, evidence review |
 | `app/threat_menu.rs` | MalwareBazaar and Cloudflare menus and refresh coordination |
 | `app/terminal.rs` | Rustyline setup, prompts, terminal helpers, live-refresh key handling |
-| `file.rs` | File metadata, streamed SHA-256, buffered text-indicator extraction |
+| `file.rs` | Path normalization, streamed SHA-256, bounded text-indicator extraction |
 | `indicator.rs` | Indicator model, source-specific hash rules, classification |
 | `investigation.rs` | In-memory evidence deduplication and display |
+| `report.rs` | Versioned report data, Markdown/JSON rendering, collision-safe local saving |
 | `malwarebazaar.rs` | MalwareBazaar requests, response parsing, lookup states |
 | `cloudflare.rs` | Cloudflare Radar requests, response parsing, feed display |
 | `ui.rs` | Box layout, wrapping, terminal formatting |
 
-## Example investigation flow
+## File investigation flow
 
 ```text
 Choose a local file
@@ -80,9 +114,11 @@ Read it as data and calculate SHA-256
        ↓
 Extract supported indicators from readable text
        ↓
-Collect unique evidence in the current investigation
+Collect extracted indicators in the current investigation
        ↓
-Optionally look up hashes with MalwareBazaar
+Optionally look up up to ten unique hashes with MalwareBazaar
+       ↓
+Offer to save Markdown and JSON reports
 ```
 
 ## Requirements and installation
@@ -111,7 +147,7 @@ CLOUDFLARE_API_TOKEN=your_cloudflare_api_token
 MALWAREBAZAAR_AUTH_KEY=your_malwarebazaar_auth_key
 ```
 
-Leave a variable unset if you do not use that integration. Missing or blank credentials do not prevent startup; CyberFeed explains which credential is needed when its feature is selected. The repository's `.env.example` contains placeholders.
+Copy `.env.example` to `.env` and replace only the values for integrations you use, or set the variables in your shell environment. Leave unused values unset. Missing or blank credentials do not prevent startup; CyberFeed explains which credential is needed when its feature is selected. Keep real credentials out of source control; `.env` is ignored by Git.
 
 ## Keyboard controls
 
@@ -142,7 +178,7 @@ Tests cover configuration parsing, indicator classification and extraction, evid
 ## Limitations and next steps
 
 - IP and domain classification is supported, but connected enrichment is currently limited to MalwareBazaar hash features. There are no IP or domain enrichment providers.
-- Investigation evidence exists only in memory and is lost when CyberFeed exits.
+- Session evidence is not restored when CyberFeed exits. Saved file reports remain under `reports/`, but manually added indicators and other session evidence are not automatically included in those file reports.
 - MalwareBazaar and Cloudflare availability, credentials, and returned data depend on those external services.
 
 Possible future work includes persistent investigations and additional indicator enrichment sources.

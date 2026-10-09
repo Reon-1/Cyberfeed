@@ -5,6 +5,7 @@ mod file;
 mod indicator;
 mod investigation;
 mod malwarebazaar;
+mod report;
 mod ui;
 
 use dotenvy::dotenv;

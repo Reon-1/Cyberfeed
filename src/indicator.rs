@@ -1,12 +1,14 @@
+use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Indicator {
     pub value: String,
     pub indicator_type: IndicatorType,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum IndicatorType {
     Hash,
     IP,

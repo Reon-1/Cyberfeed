@@ -1,9 +1,9 @@
 use crate::indicator::{EXTRACTED_HASH_LENGTHS, Indicator, classify};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufReader, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct FileInfo {
     pub name: String,
@@ -16,6 +16,7 @@ pub struct FileInspection {
     pub text_indicators: Option<TextIndicators>,
 }
 
+#[derive(Clone)]
 pub struct TextIndicators {
     pub indicators: Vec<Indicator>,
     pub limit_reached: bool,
@@ -25,21 +26,49 @@ const MAX_EXTRACTED_INDICATORS: usize = 10_000;
 
 // Hash and scan the same read-only byte stream so the evidence corresponds to
 // the bytes that produced the file hash.
-pub fn inspect_file(path_text: &str) -> Result<FileInspection, String> {
-    let path = Path::new(path_text);
-    let metadata = fs::metadata(path)
-        .map_err(|error| format!("Could not access '{}': {error}", path.display()))?;
+pub fn normalize_user_path(input: &str) -> Result<Option<PathBuf>, &'static str> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(None);
+    }
+    if input == "0" {
+        return Ok(None);
+    }
+
+    let first = input.chars().next().expect("non-empty input");
+    let last = input.chars().next_back().expect("non-empty input");
+    if first == '\'' || first == '"' {
+        if input.len() < 2 || last != first {
+            return Err(
+                "The path has an unmatched outer quote. Add the matching quote or remove it.",
+            );
+        }
+        return Ok(Some(PathBuf::from(
+            &input[first.len_utf8()..input.len() - last.len_utf8()],
+        )));
+    }
+    if last == '\'' || last == '"' {
+        return Err("The path has an unmatched outer quote. Add the matching quote or remove it.");
+    }
+    Ok(Some(PathBuf::from(input)))
+}
+
+pub fn inspect_file(path: &Path) -> Result<FileInspection, String> {
+    let file = File::open(path)
+        .map_err(|error| format!("Could not open '{}': {error}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("Could not inspect '{}': {error}", path.display()))?;
 
     if !metadata.is_file() {
         return Err(format!("'{}' is not a regular file.", path.display()));
     }
 
-    let file = File::open(path)
-        .map_err(|error| format!("Could not read '{}': {error}", path.display()))?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     let mut scanner = TextScanner::default();
+    let mut size = 0u64;
 
     loop {
         let bytes_read = reader
@@ -52,18 +81,19 @@ pub fn inspect_file(path_text: &str) -> Result<FileInspection, String> {
 
         hasher.update(&buffer[..bytes_read]);
         scanner.push_bytes(&buffer[..bytes_read]);
+        size += bytes_read as u64;
     }
 
     let name = path
         .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(path_text)
-        .to_string();
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned();
 
     Ok(FileInspection {
         info: FileInfo {
             name,
-            size: metadata.len(),
+            size,
             sha256: format!("{:x}", hasher.finalize()),
         },
         text_indicators: scanner.finish(),
@@ -213,9 +243,10 @@ impl TextScanner {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_EXTRACTED_INDICATORS, TextScanner, inspect_file};
+    use super::{MAX_EXTRACTED_INDICATORS, TextScanner, inspect_file, normalize_user_path};
     use crate::indicator::IndicatorType;
     use std::fs;
+    use std::path::PathBuf;
 
     #[test]
     fn extracts_hash_ip_and_domain_from_text_file() {
@@ -230,8 +261,7 @@ mod tests {
         )
         .expect("test file should be writable");
 
-        let analysis = inspect_file(path.to_str().expect("valid test path"))
-            .expect("file inspection should succeed");
+        let analysis = inspect_file(&path).expect("file inspection should succeed");
         let indicators = analysis
             .text_indicators
             .expect("text file should be recognized")
@@ -261,8 +291,7 @@ mod tests {
         ));
         fs::write(&path, [0xff, 0xfe, 0xfd]).expect("test file should be writable");
 
-        let analysis = inspect_file(path.to_str().expect("valid test path"))
-            .expect("binary file should still be hashed");
+        let analysis = inspect_file(&path).expect("binary file should still be hashed");
         assert!(analysis.text_indicators.is_none());
         fs::remove_file(path).expect("test file should be removable");
     }
@@ -326,5 +355,48 @@ mod tests {
         scanner.push_bytes(&[0]);
 
         assert!(scanner.finish().is_none());
+    }
+
+    #[test]
+    fn normalizes_typed_and_dragged_paths_without_shell_processing() {
+        for (input, expected) in [
+            ("/tmp/a.txt", "/tmp/a.txt"),
+            (" '/tmp/my file.txt' ", "/tmp/my file.txt"),
+            ("\"/tmp/my file.txt\"", "/tmp/my file.txt"),
+            ("/tmp/a'b.txt", "/tmp/a'b.txt"),
+            ("/tmp/é file.txt", "/tmp/é file.txt"),
+        ] {
+            assert_eq!(
+                normalize_user_path(input).unwrap().unwrap(),
+                PathBuf::from(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_empty_and_mismatched_paths_without_rewriting_them() {
+        assert!(normalize_user_path("  ").unwrap().is_none());
+        assert!(normalize_user_path("0").unwrap().is_none());
+        assert!(normalize_user_path("'missing").is_err());
+        assert!(normalize_user_path("missing\"").is_err());
+    }
+
+    #[test]
+    fn inspection_rejects_missing_files_and_directories_cleanly() {
+        let missing =
+            std::env::temp_dir().join(format!("cyberfeed-missing-{}", std::process::id()));
+        assert!(
+            inspect_file(&missing)
+                .err()
+                .unwrap()
+                .contains("Could not open")
+        );
+        let directory = std::env::temp_dir();
+        assert!(
+            inspect_file(&directory)
+                .err()
+                .unwrap()
+                .contains("not a regular file")
+        );
     }
 }
