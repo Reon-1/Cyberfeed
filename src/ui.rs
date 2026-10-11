@@ -1,6 +1,7 @@
 use std::fmt::Display;
+use std::io::{self, Write};
 
-pub const INNER_WIDTH: usize = 80;
+pub const INNER_WIDTH: usize = 112;
 const FIELD_LABEL_WIDTH: usize = 11;
 const FIELD_PREFIX_WIDTH: usize = 2;
 const FIELD_SEPARATOR_WIDTH: usize = 3;
@@ -25,10 +26,11 @@ pub enum Status {
     Success,
     Warning,
     Error,
-    Neutral,
 }
 
 pub fn header(title: &str, subtitle: &str) {
+    let title = sanitize_terminal_text(title);
+    let subtitle = sanitize_terminal_text(subtitle);
     open_box();
     if title == "CYBERFEED" {
         centered_box_line(&format!("{ACCENT}>_{RESET} {BOLD}CYBERFEED{RESET}"));
@@ -95,6 +97,8 @@ pub fn box_line(text: &str) {
 
 pub fn centered_box_line(text: &str) {
     let (width, margin) = frame_geometry();
+    // Callers may include trusted ANSI styling; dynamic header values are
+    // sanitized before styling is added.
     for line in wrap_text(text, width.max(1)) {
         if width == 0 {
             println!("{line}");
@@ -115,16 +119,19 @@ pub fn centered_box_line(text: &str) {
 }
 
 pub fn section(title: &str) {
+    let title = sanitize_terminal_text(title);
     box_line("");
     box_line(&format!("  {SECONDARY}▸{RESET} {BOLD}{title}{RESET}"));
     divider();
 }
 
 pub fn menu_item(number: &str, title: &str, description: &str) {
+    let title = sanitize_terminal_text(title);
+    let description = sanitize_terminal_text(description);
     box_line(&format!("  {} {BOLD}{title}{RESET}", menu_key(number)));
     let indent = "      ";
     let description_width = content_width().saturating_sub(indent.len()).max(1);
-    for line in wrap_text(description, description_width) {
+    for line in wrap_text(&description, description_width) {
         box_line(&format!("{indent}{MUTED}{line}{RESET}"));
     }
 }
@@ -154,7 +161,8 @@ pub fn country_flag(code: &str) -> String {
 }
 
 pub fn field(label: &str, value: impl Display) {
-    let value = value.to_string();
+    let label = sanitize_terminal_text(label);
+    let value = sanitize_terminal_text(&value.to_string());
     let value_width = content_width()
         .saturating_sub(FIELD_PREFIX_WIDTH + FIELD_LABEL_WIDTH + FIELD_SEPARATOR_WIDTH)
         .max(1);
@@ -177,10 +185,12 @@ pub fn indicator_header() {
 }
 
 pub fn indicator_row(index: usize, indicator_type: &str, indicator_value: &str) {
+    let indicator_type = sanitize_terminal_text(indicator_type);
+    let indicator_value = sanitize_terminal_text(indicator_value);
     let value_width = content_width()
         .saturating_sub(INDICATOR_PREFIX_WIDTH)
         .max(1);
-    let lines = wrap_text(indicator_value, value_width);
+    let lines = wrap_text(&indicator_value, value_width);
 
     for (line_index, line) in lines.iter().enumerate() {
         if line_index == 0 {
@@ -221,18 +231,19 @@ pub fn horizontal_margin() -> String {
 }
 
 pub fn status(label: &str, value: &str, kind: Status) {
+    let label = sanitize_terminal_text(label);
+    let value = sanitize_terminal_text(value);
     let (symbol, color) = match kind {
         Status::Success => ("✓", SUCCESS),
         Status::Warning => ("!", WARNING),
         Status::Error => ("×", ERROR),
-        Status::Neutral => ("•", MUTED),
     };
 
     let prefix = format!("  {color}{symbol}{RESET} {BOLD}{label:<STATUS_LABEL_WIDTH$}{RESET} : ");
     let value_width = content_width()
         .saturating_sub(visible_width(&prefix))
         .max(1);
-    for (index, line) in wrap_text(value, value_width).iter().enumerate() {
+    for (index, line) in wrap_text(&value, value_width).iter().enumerate() {
         if index == 0 {
             box_line(&format!("{prefix}{line}"));
         } else {
@@ -242,16 +253,57 @@ pub fn status(label: &str, value: &str, kind: Status) {
 }
 
 pub fn warning(message: &str) {
-    box_line(&format!("{WARNING}!{RESET}  {message}"));
+    box_line(&format!(
+        "{WARNING}!{RESET}  {}",
+        sanitize_terminal_text(message)
+    ));
 }
 
 pub fn error(message: &str) {
-    box_line(&format!("{ERROR}×{RESET}  {message}"));
+    box_line(&format!(
+        "{ERROR}×{RESET}  {}",
+        sanitize_terminal_text(message)
+    ));
+}
+
+/// Flush synchronous workflow progress immediately before and after blocking work.
+pub fn progress_line(message: &str, kind: Status) {
+    let safe = sanitize_terminal_text(message);
+    let (symbol, color) = match kind {
+        Status::Success => ("✓", SUCCESS),
+        Status::Warning => ("·", WARNING),
+        Status::Error => ("×", ERROR),
+    };
+    box_line(&format!("  {color}{symbol}{RESET} {safe}"));
+    if let Err(error) = io::stdout().flush() {
+        eprintln!("Output error: {error}");
+    }
+}
+
+/// Replace untrusted terminal controls before interpolating external text into
+/// a styled screen; newlines remain available for intentional wrapped output.
+pub fn sanitize_terminal_text(text: &str) -> String {
+    text.chars()
+        .map(|character| match character {
+            '\n' => character,
+            '\t' => ' ',
+            character if character.is_control() => ' ',
+            character => character,
+        })
+        .collect()
 }
 
 /// Inner panel width for layouts that need to wrap text before rendering it.
 pub fn content_width() -> usize {
     frame_geometry().0
+}
+
+/// Return detected terminal columns and rows, falling back to a readable
+/// conventional size when output is redirected or the terminal query fails.
+pub fn terminal_dimensions() -> (usize, usize) {
+    crossterm::terminal::size()
+        .map(|(columns, rows)| (usize::from(columns), usize::from(rows)))
+        .unwrap_or((INNER_WIDTH + 2, 24))
 }
 
 fn frame_geometry() -> (usize, usize) {
@@ -289,46 +341,43 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
             .find(|(_, character)| !character.is_whitespace())
             .map(|(index, _)| index)
             .unwrap_or(paragraph.len());
-        let indent = &paragraph[..indent_length];
+        let indent_width = indent_length.min(width.saturating_sub(1));
+        let indent = &paragraph[..indent_width];
+        let content_width = width.saturating_sub(indent_width).max(1);
         let words: Vec<&str> = paragraph.split_whitespace().collect();
         if words.is_empty() {
             lines.push(indent.to_string());
             continue;
         }
 
-        let paragraph_start = lines.len();
         let mut current = String::new();
         for word in words {
-            if visible_width(word) > width {
+            if visible_width(word) > content_width {
                 if !current.is_empty() {
-                    lines.push(current);
+                    lines.push(format!("{indent}{current}"));
                     current = String::new();
                 }
 
                 let mut remaining = word;
-                while visible_width(remaining) > width {
-                    let (head, tail) = split_visible(remaining, width);
-                    lines.push(head);
+                while visible_width(remaining) > content_width {
+                    let (head, tail) = split_visible(remaining, content_width);
+                    lines.push(format!("{indent}{head}"));
                     remaining = tail;
                 }
                 current.push_str(remaining);
             } else if current.is_empty() {
                 current.push_str(word);
-            } else if visible_width(&current) + 1 + visible_width(word) <= width {
+            } else if visible_width(&current) + 1 + visible_width(word) <= content_width {
                 current.push(' ');
                 current.push_str(word);
             } else {
-                lines.push(current);
+                lines.push(format!("{indent}{current}"));
                 current = word.to_string();
             }
         }
 
         if !current.is_empty() {
-            lines.push(current);
-        }
-
-        if let Some(first_line) = lines.get_mut(paragraph_start) {
-            first_line.insert_str(0, indent);
+            lines.push(format!("{indent}{current}"));
         }
     }
 
@@ -369,7 +418,8 @@ fn split_visible(text: &str, width: usize) -> (String, &str) {
     (head.to_string(), tail)
 }
 
-fn visible_width(text: &str) -> usize {
+/// Measure terminal columns while ignoring ANSI color escape sequences.
+pub(crate) fn visible_width(text: &str) -> usize {
     let mut width = 0;
     let mut escape = false;
 
@@ -428,75 +478,4 @@ fn display_width(character: char) -> usize {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        MENU_KEY_WIDTH, geometry_for_columns, menu_key, visible_width, width_for_columns, wrap_text,
-    };
-
-    #[test]
-    fn wraps_long_words_without_dropping_content() {
-        let text = "abcdef1234567890";
-        let lines = wrap_text(text, 5);
-
-        assert_eq!(lines, ["abcde", "f1234", "56789", "0"]);
-        assert_eq!(lines.concat(), text);
-    }
-
-    #[test]
-    fn ignores_ansi_sequences_when_measuring() {
-        assert_eq!(visible_width("\x1b[31mERROR\x1b[0m"), 5);
-        assert_eq!(wrap_text("\x1b[31mERROR\x1b[0m details", 12).len(), 2);
-    }
-
-    #[test]
-    fn preserves_padding_when_line_fits() {
-        assert_eq!(
-            wrap_text("  Name       : test.txt", 80),
-            ["  Name       : test.txt"]
-        );
-    }
-
-    #[test]
-    fn keeps_a_sha256_value_on_one_line_when_the_value_column_allows_it() {
-        let hash = "226a723ffb4a91d9950a8b266167c5b354ab0db1dc225578494917fe53867ef2";
-
-        assert_eq!(wrap_text(hash, 64), [hash]);
-        assert_eq!(wrap_text(hash, 32).concat(), hash);
-    }
-
-    #[test]
-    fn counts_wide_unicode_characters_by_terminal_columns() {
-        assert_eq!(visible_width("中"), 2);
-        assert_eq!(visible_width("🇳🇵"), 4);
-        assert_eq!(wrap_text("中中", 3), ["中", "中"]);
-    }
-
-    #[test]
-    fn frame_width_fits_narrow_terminals_and_stays_at_eighty_columns_maximum() {
-        assert_eq!(width_for_columns(41), 39);
-        assert_eq!(width_for_columns(82), 80);
-        assert_eq!(width_for_columns(160), 80);
-        assert_eq!(width_for_columns(1), 1);
-    }
-
-    #[test]
-    fn frame_centers_in_wide_terminals_and_expands_to_available_width() {
-        assert_eq!(geometry_for_columns(120), (80, 19));
-        assert_eq!(geometry_for_columns(42), (40, 0));
-        assert_eq!(geometry_for_columns(1), (0, 0));
-    }
-
-    #[test]
-    fn menu_keys_keep_compact_brackets_and_a_consistent_title_column() {
-        let one = menu_key("1");
-        let two = menu_key("2");
-        let back = menu_key("0");
-
-        assert!(one.contains("[1]"));
-        assert!(two.contains("[2]"));
-        assert!(back.contains("[0]"));
-        assert_eq!(visible_width(&one), MENU_KEY_WIDTH);
-        assert_eq!(visible_width(&two), MENU_KEY_WIDTH);
-        assert_eq!(visible_width(&back), MENU_KEY_WIDTH);
-    }
-}
+mod tests;

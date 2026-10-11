@@ -71,7 +71,7 @@ fn malwarebazaar_menu(
 
         match terminal::read_input(editor, "\n  Select an option: ", false).as_str() {
             "1" if auth_key.trim().is_empty() => terminal::show_error(
-                "Set MALWAREBAZAAR_AUTH_KEY in the environment or .env to use MalwareBazaar.",
+                "Set ABUSECH_AUTH_KEY in the environment or .env to use MalwareBazaar.",
             ),
             "1" => match fetch_malware_data(client, auth_key) {
                 Ok(data) => {
@@ -82,7 +82,7 @@ fn malwarebazaar_menu(
                 Err(error) => terminal::show_source_error(&error.to_string()),
             },
             "2" if auth_key.trim().is_empty() => terminal::show_error(
-                "Set MALWAREBAZAAR_AUTH_KEY in the environment or .env to use MalwareBazaar.",
+                "Set ABUSECH_AUTH_KEY in the environment or .env to use MalwareBazaar.",
             ),
             "2" => filter_malware_samples(editor, client, auth_key, investigation),
             "0" => break,

@@ -7,6 +7,7 @@ mod indicator;
 mod investigation;
 mod malwarebazaar;
 mod report;
+mod threatfox;
 mod ui;
 
 use dotenvy::dotenv;

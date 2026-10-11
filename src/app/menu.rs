@@ -31,7 +31,7 @@ pub(super) fn run(client: &Client, config: &Config) {
     };
     let mut investigation = Investigation::new();
     let cloudflare_token = config.cloudflare_token.as_deref().unwrap_or("");
-    let malwarebazaar_auth_key = config.malwarebazaar_auth_key.as_deref().unwrap_or("");
+    let abusech_auth_key = config.abusech_auth_key.as_deref().unwrap_or("");
 
     loop {
         terminal::clear_screen();
@@ -62,20 +62,15 @@ pub(super) fn run(client: &Client, config: &Config) {
             "1" => file_workflow::investigate_file(
                 &mut editor,
                 client,
-                malwarebazaar_auth_key,
+                abusech_auth_key,
                 &mut investigation,
             ),
-            "2" => investigation_menu(
-                &mut editor,
-                client,
-                malwarebazaar_auth_key,
-                &mut investigation,
-            ),
+            "2" => investigation_menu(&mut editor, client, abusech_auth_key, &mut investigation),
             "3" => threat_menu::menu(
                 &mut editor,
                 client,
                 cloudflare_token,
-                malwarebazaar_auth_key,
+                abusech_auth_key,
                 &mut investigation,
             ),
             "4" => saved_reports::menu(&mut editor),

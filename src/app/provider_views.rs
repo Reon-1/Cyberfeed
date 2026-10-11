@@ -1,37 +1,223 @@
 //! Terminal presentation for provider data; request and parsing code stays in provider modules.
 use crate::cloudflare::{TopAttackPairs, TopOrigins, TopTargets};
 use crate::indicator::{Indicator, IndicatorType};
-use crate::malwarebazaar::{MalwareLookupResult, MalwareResponse, MalwareSample};
+use crate::malwarebazaar::{MalwareResponse, MalwareSample};
+use crate::report::{LookupOutcome, MatchDetails};
 use crate::ui;
 
-// Display the result of a hash lookup without adding it to the sample feed UI.
-pub(super) fn display_hash_lookup(result: &MalwareLookupResult) {
-    match result {
-        MalwareLookupResult::Found(sample) => {
-            ui::status("MalwareBazaar", "FOUND", ui::Status::Success);
-            ui::box_line("  MalwareBazaar returned a record for this hash.");
-            ui::field("First seen", &sample.first_seen);
-            ui::field("File type", &sample.file_type);
+pub(crate) fn display_lookup(provider: &str, indicator: &str, outcome: &LookupOutcome) {
+    let status = outcome.status();
+    ui::status(provider, status, status_kind(outcome));
+    ui::field("Indicator", indicator);
+    match outcome {
+        LookupOutcome::Found(details) => display_malwarebazaar_match(details),
+        LookupOutcome::ThreatFoxFound { findings } => {
+            for finding in findings {
+                ui::field("IOC", format!("{} ({})", finding.ioc, finding.ioc_type));
+                ui::field(
+                    "IOC type info",
+                    finding
+                        .ioc_type_description
+                        .as_deref()
+                        .unwrap_or("Not provided"),
+                );
+                ui::field(
+                    "Threat type",
+                    finding.threat_type.as_deref().unwrap_or("Not provided"),
+                );
+                ui::field(
+                    "Threat info",
+                    finding
+                        .threat_type_description
+                        .as_deref()
+                        .unwrap_or("Not provided"),
+                );
+                ui::field(
+                    "Malware family",
+                    finding.malware.as_deref().unwrap_or("Not provided"),
+                );
+                ui::field(
+                    "Malware name",
+                    finding
+                        .malware_printable
+                        .as_deref()
+                        .unwrap_or("Not provided"),
+                );
+                ui::field(
+                    "Confidence",
+                    finding
+                        .confidence_level
+                        .map_or_else(|| "Not provided".into(), |value| format!("{value}%")),
+                );
+                ui::field(
+                    "First seen",
+                    finding.first_seen.as_deref().unwrap_or("Not provided"),
+                );
+                ui::field(
+                    "Last seen",
+                    finding.last_seen.as_deref().unwrap_or("Not provided"),
+                );
+                ui::field(
+                    "Reference",
+                    finding.reference.as_deref().unwrap_or("Not provided"),
+                );
+                ui::field(
+                    "Reporter",
+                    finding.reporter.as_deref().unwrap_or("Not provided"),
+                );
+                ui::field(
+                    "Tags",
+                    if finding.tags.is_empty() {
+                        "Not provided".to_owned()
+                    } else {
+                        finding.tags.join(", ")
+                    },
+                );
+                ui::field(
+                    "Record ID",
+                    finding
+                        .source_record_id
+                        .as_deref()
+                        .unwrap_or("Not provided"),
+                );
+            }
+        }
+        LookupOutcome::NotFound => ui::field("Meaning", "No record returned at lookup time."),
+        LookupOutcome::Invalid { explanation }
+        | LookupOutcome::ApiError { explanation }
+        | LookupOutcome::RequestError { explanation }
+        | LookupOutcome::Unsupported { explanation } => ui::field("Details", explanation),
+        LookupOutcome::NotConfigured => {
             ui::field(
-                "Signature",
-                sample.signature.as_deref().unwrap_or("Unknown"),
+                "Details",
+                "ABUSECH_AUTH_KEY is not configured; no request was made.",
             );
         }
-        MalwareLookupResult::NotFound => {
-            ui::status("MalwareBazaar", "NOT FOUND", ui::Status::Warning);
-            ui::box_line("  No record for this hash was returned by MalwareBazaar.");
-            ui::warning("This does not determine whether the file is malicious or safe.");
+        LookupOutcome::SkippedDuplicate { references_hash } => {
+            ui::field(
+                "Details",
+                format!("Reuses earlier lookup for {references_hash}."),
+            );
         }
-        MalwareLookupResult::InvalidHash(status) => {
-            ui::status("MalwareBazaar", "INVALID", ui::Status::Error);
-            ui::box_line("  MalwareBazaar could not use the submitted hash value.");
-            ui::field("Provider detail", status);
+        LookupOutcome::SkippedLookupLimit => {
+            ui::field(
+                "Details",
+                "No request was made because the automatic lookup limit was reached.",
+            );
         }
-        MalwareLookupResult::ApiError(status) => {
-            ui::status("MalwareBazaar", "API ERROR", ui::Status::Error);
-            ui::box_line("  MalwareBazaar did not return a usable lookup result.");
-            ui::field("Provider detail", status);
+    }
+}
+
+/// Render provider evidence without repeating the selected indicator value.
+/// The detail screen already shows that value once, so only a distinct match
+/// identifier is shown below when the provider returned one.
+pub(crate) fn display_lookup_details(
+    provider: &str,
+    selected_indicator: &str,
+    outcome: &LookupOutcome,
+) {
+    ui::section(provider);
+    ui::status("Outcome", outcome.status(), status_kind(outcome));
+    match outcome {
+        LookupOutcome::Found(details) => {
+            if details.matched_sha256 != selected_indicator {
+                ui::field("Matched SHA-256", &details.matched_sha256);
+            }
+            present_field("First seen", Some(&details.first_seen));
+            present_field("File type", Some(&details.file_type));
+            present_field("Sample file", details.sample_filename.as_deref());
+            present_field("Signature", details.signature.as_deref());
         }
+        LookupOutcome::ThreatFoxFound { findings } => {
+            for (index, finding) in findings.iter().enumerate() {
+                if findings.len() > 1 {
+                    ui::field("Finding", index + 1);
+                }
+                if finding.ioc != selected_indicator {
+                    ui::field(
+                        "Matched IOC",
+                        format!("{} ({})", finding.ioc, finding.ioc_type),
+                    );
+                }
+                present_field("IOC type", Some(&finding.ioc_type));
+                present_field("Type info", finding.ioc_type_description.as_deref());
+                present_field("Threat type", finding.threat_type.as_deref());
+                present_field("Threat info", finding.threat_type_description.as_deref());
+                present_field("Malware family", finding.malware.as_deref());
+                present_field("Malware name", finding.malware_printable.as_deref());
+                if let Some(confidence) = finding.confidence_level {
+                    ui::field("Confidence", format!("{confidence}%"));
+                }
+                present_field("First seen", finding.first_seen.as_deref());
+                present_field("Last seen", finding.last_seen.as_deref());
+                present_field("Record ID", finding.source_record_id.as_deref());
+                present_field("Reference", finding.reference.as_deref());
+                present_field("Reporter", finding.reporter.as_deref());
+                if !finding.tags.is_empty() {
+                    ui::field("Tags", finding.tags.join(", "));
+                }
+            }
+        }
+        LookupOutcome::NotFound => ui::field("Meaning", "No record returned at lookup time."),
+        LookupOutcome::Invalid { explanation }
+        | LookupOutcome::ApiError { explanation }
+        | LookupOutcome::RequestError { explanation }
+        | LookupOutcome::Unsupported { explanation } => ui::field("Details", explanation),
+        LookupOutcome::NotConfigured => {
+            ui::field(
+                "Details",
+                "ABUSECH_AUTH_KEY is not configured; no request was made.",
+            );
+        }
+        LookupOutcome::SkippedDuplicate { references_hash } => {
+            if !references_hash.eq_ignore_ascii_case(selected_indicator) {
+                ui::field("Reuses lookup", references_hash);
+            } else {
+                ui::field("Details", "This value was already looked up once.");
+            }
+        }
+        LookupOutcome::SkippedLookupLimit => {
+            ui::field(
+                "Details",
+                "No request was made because the lookup limit was reached.",
+            );
+        }
+    }
+}
+
+fn present_field(label: &str, value: Option<&str>) {
+    if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+        ui::field(label, value);
+    }
+}
+
+fn display_malwarebazaar_match(details: &MatchDetails) {
+    ui::field("Matched SHA-256", &details.matched_sha256);
+    ui::field("First seen", &details.first_seen);
+    ui::field("File type", &details.file_type);
+    ui::field(
+        "Sample file",
+        details.sample_filename.as_deref().unwrap_or("Not provided"),
+    );
+    ui::field(
+        "Signature",
+        details.signature.as_deref().unwrap_or("Not provided"),
+    );
+}
+
+pub(crate) fn status_kind(outcome: &LookupOutcome) -> ui::Status {
+    match outcome {
+        // FOUND is a positive match observation from a provider, not a safety
+        // assessment of the file that contained or produced the indicator.
+        LookupOutcome::Found(_) | LookupOutcome::ThreatFoxFound { .. } => ui::Status::Success,
+        LookupOutcome::Invalid { .. }
+        | LookupOutcome::ApiError { .. }
+        | LookupOutcome::RequestError { .. } => ui::Status::Error,
+        LookupOutcome::NotFound
+        | LookupOutcome::NotConfigured
+        | LookupOutcome::SkippedDuplicate { .. }
+        | LookupOutcome::SkippedLookupLimit
+        | LookupOutcome::Unsupported { .. } => ui::Status::Warning,
     }
 }
 
@@ -177,14 +363,13 @@ pub(super) fn display_top_origins(data: &TopOrigins) {
         let flag = ui::country_flag(&country.origin_country_alpha2);
         let bar = percentage_bar(country.value);
 
-        ui::box_line(&format!(
-            "  #{:<2} {} {:<18} {:>6.2}%",
-            country.rank,
-            flag,
-            shorten(&country.origin_country_name, 18),
-            country.value
-        ));
-
+        ui::field(
+            &format!("#{}", country.rank),
+            format!(
+                "{flag} {} · {:.2}%",
+                country.origin_country_name, country.value
+            ),
+        );
         ui::box_line(&format!("      {bar}"));
     }
 }
@@ -197,14 +382,13 @@ pub(super) fn display_top_targets(data: &TopTargets) {
         let flag = ui::country_flag(&country.target_country_alpha2);
         let bar = percentage_bar(country.value);
 
-        ui::box_line(&format!(
-            "  #{:<2} {} {:<18} {:>6.2}%",
-            country.rank,
-            flag,
-            shorten(&country.target_country_name, 18),
-            country.value
-        ));
-
+        ui::field(
+            &format!("#{}", country.rank),
+            format!(
+                "{flag} {} · {:.2}%",
+                country.target_country_name, country.value
+            ),
+        );
         ui::box_line(&format!("      {bar}"));
     }
 }
@@ -218,16 +402,13 @@ pub(super) fn display_top_attack_pairs(data: &TopAttackPairs) {
         let target_flag = ui::country_flag(&pair.target_country_alpha2);
         let bar = percentage_bar(pair.value);
 
-        ui::box_line(&format!(
-            "  #{:<2} {} {} → {} {:<16} {:>6.2}%",
-            pair.rank,
-            origin_flag,
-            shorten(&pair.origin_country_name, 12),
-            target_flag,
-            shorten(&pair.target_country_name, 16),
-            pair.value
-        ));
-
+        ui::field(
+            &format!("#{}", pair.rank),
+            format!(
+                "{origin_flag} {} → {target_flag} {} · {:.2}%",
+                pair.origin_country_name, pair.target_country_name, pair.value
+            ),
+        );
         ui::box_line(&format!("      {bar}"));
     }
 }
@@ -242,13 +423,41 @@ fn percentage_bar(value: f64) -> String {
     format!("[{}{}]", "█".repeat(filled), "░".repeat(20 - filled))
 }
 
-fn shorten(text: &str, max_length: usize) -> String {
-    // Shorten long country names so they don't break the terminal layout
-    if text.chars().count() <= max_length {
-        return text.to_string();
+#[cfg(test)]
+mod tests {
+    use super::status_kind;
+    use crate::report::LookupOutcome;
+    use crate::ui::Status;
+
+    #[test]
+    fn provider_status_colors_preserve_result_meaning() {
+        assert!(matches!(
+            status_kind(&LookupOutcome::Found(crate::report::MatchDetails {
+                matched_sha256: "hash".into(),
+                first_seen: "today".into(),
+                file_type: "bin".into(),
+                sample_filename: None,
+                signature: None,
+            })),
+            Status::Success
+        ));
+        assert!(matches!(
+            status_kind(&LookupOutcome::NotFound),
+            Status::Warning
+        ));
+        assert!(matches!(
+            status_kind(&LookupOutcome::NotConfigured),
+            Status::Warning
+        ));
+        assert!(matches!(
+            status_kind(&LookupOutcome::SkippedLookupLimit),
+            Status::Warning
+        ));
+        assert!(matches!(
+            status_kind(&LookupOutcome::RequestError {
+                explanation: "offline".into()
+            }),
+            Status::Error
+        ));
     }
-
-    let shortened: String = text.chars().take(max_length.saturating_sub(3)).collect();
-
-    format!("{}...", shortened)
 }

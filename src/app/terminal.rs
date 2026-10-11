@@ -46,7 +46,7 @@ pub(super) fn read_input(editor: &mut InputEditor, prompt: &str, path_completion
     let prompt = ui::align_prompt(prompt);
     match editor.readline(&prompt) {
         Ok(input) => {
-            let input = input.trim().to_string();
+            let input = clean_editor_input(input, path_completion);
             if !input.is_empty() {
                 let _ = editor.add_history_entry(input.as_str());
             }
@@ -57,6 +57,16 @@ pub(super) fn read_input(editor: &mut InputEditor, prompt: &str, path_completion
             eprintln!("Input error: {error}");
             String::from("\0")
         }
+    }
+}
+
+fn clean_editor_input(input: String, path_completion: bool) -> String {
+    if path_completion {
+        // Preserve meaningful edge spaces in an existing filename; the path
+        // normalizer separately removes terminal-added surrounding whitespace.
+        input.trim_matches(['\r', '\n']).to_owned()
+    } else {
+        input.trim().to_owned()
     }
 }
 
@@ -150,5 +160,19 @@ pub(super) fn wait_for_refresh(interval: Duration) -> bool {
 fn flush() {
     if let Err(error) = io::stdout().flush() {
         eprintln!("Output error: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clean_editor_input;
+
+    #[test]
+    fn path_input_keeps_spaces_but_removes_terminal_line_endings() {
+        assert_eq!(
+            clean_editor_input(" /tmp/a b \r\n".into(), true),
+            " /tmp/a b "
+        );
+        assert_eq!(clean_editor_input("  next  ".into(), false), "next");
     }
 }

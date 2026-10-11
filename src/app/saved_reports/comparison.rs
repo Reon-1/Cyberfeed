@@ -165,7 +165,7 @@ fn compare_provider_results(
         let new_result = new.get(&key).copied();
         match (old_result, new_result) {
             (Some(before), Some(after)) => {
-                if before.outcome == after.outcome {
+                if outcomes_equivalent(&before.outcome, &after.outcome) {
                     result.unchanged_provider_results += 1;
                 } else {
                     result.provider_changes.push(format!(
@@ -198,6 +198,22 @@ fn compare_provider_results(
     }
 }
 
+fn outcomes_equivalent(older: &LookupOutcome, newer: &LookupOutcome) -> bool {
+    match (older, newer) {
+        (
+            LookupOutcome::ThreatFoxFound { findings: older },
+            LookupOutcome::ThreatFoxFound { findings: newer },
+        ) => {
+            let mut older = older.clone();
+            let mut newer = newer.clone();
+            older.sort();
+            newer.sort();
+            older == newer
+        }
+        _ => older == newer,
+    }
+}
+
 fn lookup_map(lookups: &[ProviderLookup]) -> BTreeMap<(String, String, String), &ProviderLookup> {
     lookups
         .iter()
@@ -223,6 +239,7 @@ fn outcome_is_unavailable(outcome: &LookupOutcome) -> bool {
             | LookupOutcome::NotConfigured
             | LookupOutcome::SkippedDuplicate { .. }
             | LookupOutcome::SkippedLookupLimit
+            | LookupOutcome::Unsupported { .. }
     )
 }
 
@@ -247,7 +264,47 @@ fn outcome_description(outcome: &LookupOutcome) -> String {
             format!("SKIPPED DUPLICATE (reuses {references_hash})")
         }
         LookupOutcome::SkippedLookupLimit => "SKIPPED LOOKUP LIMIT".into(),
+        LookupOutcome::Unsupported { explanation } => format!("UNSUPPORTED: {explanation}"),
+        LookupOutcome::ThreatFoxFound { findings } => {
+            let details = findings
+                .iter()
+                .map(threatfox_finding_description)
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!("THREATFOX FOUND ({details})")
+        }
     }
+}
+
+fn threatfox_finding_description(finding: &crate::report::ThreatFoxFinding) -> String {
+    format!(
+        "IOC {} ({}; {}); threat {} ({}); malware {} ({}); confidence {}; first seen {}; last seen {}; reference {}; reporter {}; tags [{}]; record {}",
+        finding.ioc,
+        finding.ioc_type,
+        finding
+            .ioc_type_description
+            .as_deref()
+            .unwrap_or("type description unavailable"),
+        finding.threat_type.as_deref().unwrap_or("unavailable"),
+        finding
+            .threat_type_description
+            .as_deref()
+            .unwrap_or("description unavailable"),
+        finding.malware.as_deref().unwrap_or("unavailable"),
+        finding
+            .malware_printable
+            .as_deref()
+            .unwrap_or("printable name unavailable"),
+        finding
+            .confidence_level
+            .map_or_else(|| "unavailable".into(), |value| value.to_string()),
+        finding.first_seen.as_deref().unwrap_or("unavailable"),
+        finding.last_seen.as_deref().unwrap_or("unavailable"),
+        finding.reference.as_deref().unwrap_or("unavailable"),
+        finding.reporter.as_deref().unwrap_or("unavailable"),
+        finding.tags.join(", "),
+        finding.source_record_id.as_deref().unwrap_or("unavailable"),
+    )
 }
 
 #[cfg(test)]
@@ -396,5 +453,52 @@ mod tests {
         assert!(!comparison.same_subject);
         assert!(comparison.added_indicators.is_empty());
         assert!(comparison.provider_changes.is_empty());
+    }
+
+    #[test]
+    fn threatfox_records_compare_structured_fields_and_equivalent_records_stay_unchanged() {
+        use crate::report::ThreatFoxFinding;
+        let finding = ThreatFoxFinding {
+            source_record_id: Some("17".into()),
+            ioc: "example.test".into(),
+            ioc_type: "domain".into(),
+            ioc_type_description: None,
+            threat_type: Some("botnet_cc".into()),
+            threat_type_description: None,
+            malware: None,
+            malware_printable: Some("Family".into()),
+            confidence_level: Some(80),
+            first_seen: None,
+            last_seen: None,
+            reference: None,
+            reporter: None,
+            tags: vec![],
+        };
+        let set = |finding| LookupOutcome::ThreatFoxFound {
+            findings: vec![finding],
+        };
+        let mut older = report();
+        older.provider_lookups[0].provider = "ThreatFox".into();
+        older.provider_lookups[0].outcome = set(finding.clone());
+        let mut second_finding = finding.clone();
+        second_finding.ioc = "other.example".into();
+        if let LookupOutcome::ThreatFoxFound { findings } = &mut older.provider_lookups[0].outcome {
+            findings.push(second_finding);
+        }
+        let mut same = older.clone();
+        if let LookupOutcome::ThreatFoxFound { findings } = &mut same.provider_lookups[0].outcome {
+            findings.reverse();
+        }
+        assert_eq!(compare(&older, &same).unchanged_provider_results, 1);
+        same = older.clone();
+        let LookupOutcome::ThreatFoxFound { findings } = &mut same.provider_lookups[0].outcome
+        else {
+            panic!()
+        };
+        findings[0].confidence_level = Some(95);
+        let changed = compare(&older, &same);
+        assert_eq!(changed.unchanged_provider_results, 0);
+        assert!(changed.provider_changes[0].contains("confidence 80"));
+        assert!(changed.provider_changes[0].contains("confidence 95"));
     }
 }

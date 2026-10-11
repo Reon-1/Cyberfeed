@@ -30,7 +30,7 @@ mod tests {
         let r = InvestigationReport::new(&f, vec![], Some(false), vec![]);
         let j = serde_json::to_string(&r).unwrap();
         let back: InvestigationReport = serde_json::from_str(&j).unwrap();
-        assert_eq!(back.schema_version, 1);
+        assert_eq!(back.schema_version, SCHEMA_VERSION);
         assert_eq!(back.file.filename, "x");
         assert!(back.file.inspected_locally_not_executed_or_uploaded);
     }
@@ -255,5 +255,52 @@ mod tests {
         assert!(!json.contains("auth_key"));
         assert!(!json.contains("Auth-Key"));
         assert!(!json.contains("MALWAREBAZAAR_AUTH_KEY"));
+        assert!(!json.contains("ABUSECH_AUTH_KEY"));
+    }
+
+    #[test]
+    fn threatfox_findings_round_trip_and_render_provider_fields() {
+        let file = FileInfo {
+            name: "evidence".into(),
+            size: 1,
+            sha256: "subject".into(),
+        };
+        let report = InvestigationReport::new(
+            &file,
+            vec![],
+            None,
+            vec![ProviderLookup {
+                provider: "ThreatFox".into(),
+                subject: LookupSubject::ExtractedIndicator,
+                queried_hash: "example.test".into(),
+                retrieved_at_unix_seconds: Some(5),
+                outcome: LookupOutcome::ThreatFoxFound {
+                    findings: vec![ThreatFoxFinding {
+                        source_record_id: Some("42".into()),
+                        ioc: "example.test".into(),
+                        ioc_type: "domain".into(),
+                        ioc_type_description: None,
+                        threat_type: Some("botnet_cc".into()),
+                        threat_type_description: Some("C2".into()),
+                        malware: None,
+                        malware_printable: Some("Example family".into()),
+                        confidence_level: Some(90),
+                        first_seen: Some("2026-01-01".into()),
+                        last_seen: None,
+                        reference: None,
+                        reporter: Some("researcher".into()),
+                        tags: vec!["tag".into()],
+                    }],
+                },
+            }],
+        );
+        let serialized = serde_json::to_vec(&report).unwrap();
+        let loaded: InvestigationReport = serde_json::from_slice(&serialized).unwrap();
+        assert!(
+            matches!(&loaded.provider_lookups[0].outcome, LookupOutcome::ThreatFoxFound { findings } if findings[0].confidence_level == Some(90) && findings[0].source_record_id.as_deref() == Some("42"))
+        );
+        let markdown = loaded.to_markdown();
+        assert!(markdown.contains("Example family"));
+        assert!(markdown.contains("ThreatFox returned matching IOC records"));
     }
 }

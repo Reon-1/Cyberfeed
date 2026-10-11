@@ -1,15 +1,16 @@
 use crate::indicator::{Indicator, IndicatorType};
+use crate::report::ProviderLookup;
 use crate::ui;
 use std::collections::HashSet;
 
-/// Indicators collected during the current CLI run.
+/// Indicators and provider observations collected during the current CLI run.
 ///
-/// This session model intentionally stores only typed indicator values. File
-/// observations and provider lookup outcomes belong to `InvestigationReport`,
-/// which describes one file check; conflating the two would lose that context.
+/// These observations stay in memory; exported file reports keep their own
+/// file-scoped snapshot so unrelated manual indicators are not mixed in.
 pub struct Investigation {
     indicators: Vec<Indicator>,
     seen: HashSet<Indicator>,
+    provider_lookups: Vec<ProviderLookup>,
 }
 
 impl Investigation {
@@ -18,6 +19,7 @@ impl Investigation {
         Self {
             indicators: Vec::new(),
             seen: HashSet::new(),
+            provider_lookups: Vec::new(),
         }
     }
 
@@ -54,6 +56,14 @@ impl Investigation {
                 &indicator.value,
             );
         }
+    }
+
+    pub fn add_provider_lookup(&mut self, lookup: ProviderLookup) {
+        self.provider_lookups.push(lookup);
+    }
+
+    pub fn provider_lookups(&self) -> &[ProviderLookup] {
+        &self.provider_lookups
     }
 }
 

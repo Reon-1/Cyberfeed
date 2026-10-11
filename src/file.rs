@@ -27,14 +27,35 @@ const MAX_EXTRACTED_INDICATORS: usize = 10_000;
 // Hash and scan the same read-only byte stream so the evidence corresponds to
 // the bytes that produced the file hash.
 pub fn normalize_user_path(input: &str) -> Result<Option<PathBuf>, &'static str> {
-    let input = input.trim();
-    if input.is_empty() {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed == "0" {
         return Ok(None);
     }
-    if input == "0" {
-        return Ok(None);
+    if !input.trim().is_empty() && Path::new(input).exists() {
+        return Ok(Some(PathBuf::from(input)));
     }
+    let input = trimmed;
 
+    let unquoted = strip_matching_outer_quotes(input)?;
+    let exact = PathBuf::from(unquoted);
+    // An existing literal filename wins over terminal escape decoding. This
+    // keeps valid backslashes intact while still accepting drag-in `\ ` paths.
+    if exact.exists() {
+        return Ok(Some(exact));
+    }
+    if let Some(uri_path) = decode_file_uri(unquoted)
+        && uri_path.exists()
+    {
+        return Ok(Some(uri_path));
+    }
+    let decoded = decode_terminal_escapes(unquoted);
+    if decoded != unquoted && Path::new(&decoded).exists() {
+        return Ok(Some(PathBuf::from(decoded)));
+    }
+    Ok(Some(exact))
+}
+
+fn strip_matching_outer_quotes(input: &str) -> Result<&str, &'static str> {
     let first = input.chars().next().expect("non-empty input");
     let last = input.chars().next_back().expect("non-empty input");
     if first == '\'' || first == '"' {
@@ -43,14 +64,51 @@ pub fn normalize_user_path(input: &str) -> Result<Option<PathBuf>, &'static str>
                 "The path has an unmatched outer quote. Add the matching quote or remove it.",
             );
         }
-        return Ok(Some(PathBuf::from(
-            &input[first.len_utf8()..input.len() - last.len_utf8()],
-        )));
+        return Ok(&input[first.len_utf8()..input.len() - last.len_utf8()]);
     }
     if last == '\'' || last == '"' {
         return Err("The path has an unmatched outer quote. Add the matching quote or remove it.");
     }
-    Ok(Some(PathBuf::from(input)))
+    Ok(input)
+}
+
+fn decode_terminal_escapes(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\\'
+            && chars.peek().is_some_and(|next| {
+                next.is_whitespace() || matches!(next, '\\' | '\'' | '"' | '(' | ')' | '[' | ']')
+            })
+        {
+            output.push(chars.next().expect("peeked character exists"));
+        } else {
+            output.push(character);
+        }
+    }
+    output
+}
+
+fn decode_file_uri(input: &str) -> Option<PathBuf> {
+    let path = input.strip_prefix("file://")?;
+    // A local file URI may include an explicit localhost authority.
+    let path = path
+        .strip_prefix("localhost/")
+        .map_or_else(|| path.to_owned(), |rest| format!("/{rest}"));
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok()?;
+            decoded.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok().map(PathBuf::from)
 }
 
 pub fn inspect_file(path: &Path) -> Result<FileInspection, String> {
@@ -244,177 +302,4 @@ impl TextScanner {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{MAX_EXTRACTED_INDICATORS, TextScanner, inspect_file, normalize_user_path};
-    use crate::indicator::IndicatorType;
-    use std::fs;
-    use std::path::PathBuf;
-
-    #[test]
-    fn extracts_hash_ip_and_domain_from_text_file() {
-        let path = std::env::temp_dir().join(format!(
-            "cyberfeed-indicators-{}-{}.txt",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
-        fs::write(
-            &path,
-            "226a723ffb4a91d9950a8b266167c5b354ab0db1dc225578494917fe53867ef2\nsecurity-malware.com\n185.244.150.174\n",
-        )
-        .expect("test file should be writable");
-
-        let analysis = inspect_file(&path).expect("file inspection should succeed");
-        let indicators = analysis
-            .text_indicators
-            .expect("text file should be recognized")
-            .indicators;
-
-        assert_eq!(indicators.len(), 3);
-        assert!(matches!(indicators[0].indicator_type, IndicatorType::Hash));
-        assert!(matches!(
-            indicators[1].indicator_type,
-            IndicatorType::Domain
-        ));
-        assert!(matches!(indicators[2].indicator_type, IndicatorType::IP));
-        assert_eq!(
-            indicators[0].value,
-            "226a723ffb4a91d9950a8b266167c5b354ab0db1dc225578494917fe53867ef2"
-        );
-
-        fs::remove_file(path).expect("test file should be removable");
-    }
-
-    #[test]
-    fn extracted_ipv6_uses_the_same_classifier_as_manual_input() {
-        let mut scanner = TextScanner::default();
-        scanner.push_text("2001:db8::1 example.test:");
-        scanner.finish_token();
-        let extracted = scanner.finish().expect("input should be text");
-        assert_eq!(extracted.indicators.len(), 2);
-        assert_eq!(extracted.indicators[0].value, "2001:db8::1");
-        assert_eq!(extracted.indicators[0].indicator_type, IndicatorType::IP);
-        assert_eq!(extracted.indicators[1].value, "example.test");
-        assert_eq!(
-            extracted.indicators[1].indicator_type,
-            IndicatorType::Domain
-        );
-    }
-
-    #[test]
-    fn skips_non_text_file_contents() {
-        let path = std::env::temp_dir().join(format!(
-            "cyberfeed-binary-{}-{}.bin",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
-        fs::write(&path, [0xff, 0xfe, 0xfd]).expect("test file should be writable");
-
-        let analysis = inspect_file(&path).expect("binary file should still be hashed");
-        assert!(analysis.text_indicators.is_none());
-        fs::remove_file(path).expect("test file should be removable");
-    }
-
-    #[test]
-    fn a_very_long_token_does_not_hide_later_indicators_or_grow_unbounded() {
-        let mut scanner = TextScanner::default();
-        scanner.push_text(&format!("{} example.com", "a".repeat(100_000)));
-        scanner.finish_token();
-
-        assert!(scanner.token.is_empty());
-        assert_eq!(scanner.indicators.len(), 1);
-        assert_eq!(scanner.indicators[0].value, "example.com");
-    }
-
-    #[test]
-    fn scanner_deduplicates_case_variants_but_keeps_first_spelling() {
-        let mut scanner = TextScanner::default();
-        scanner.push_text("Example.COM example.com");
-        scanner.finish_token();
-
-        assert_eq!(scanner.indicators.len(), 1);
-        assert_eq!(scanner.indicators[0].value, "Example.COM");
-    }
-
-    #[test]
-    fn extraction_stops_at_the_explicit_unique_indicator_cap() {
-        let mut scanner = TextScanner::default();
-        let content = (0..=MAX_EXTRACTED_INDICATORS)
-            .map(|number| format!("host{number}.example "))
-            .collect::<String>();
-        scanner.push_text(&content);
-        assert_eq!(scanner.seen.len(), MAX_EXTRACTED_INDICATORS);
-        let result = scanner.finish().expect("content should be text");
-
-        assert_eq!(result.indicators.len(), MAX_EXTRACTED_INDICATORS);
-        assert!(result.limit_reached);
-    }
-
-    #[test]
-    fn utf8_sequences_split_across_read_chunks_are_preserved() {
-        let mut scanner = TextScanner::default();
-        scanner.push_bytes(b" ");
-        scanner.push_bytes(&[0xe2]);
-        scanner.push_bytes(&[0x80]);
-        scanner.push_bytes(&[0x83]);
-        scanner.push_bytes(b"example.com");
-        let result = scanner.finish().expect("valid UTF-8 should stay text");
-
-        assert_eq!(result.indicators.len(), 1);
-        assert_eq!(result.indicators[0].value, "example.com");
-    }
-
-    #[test]
-    fn binary_bytes_after_the_extraction_cap_still_reject_text_extraction() {
-        let mut scanner = TextScanner::default();
-        let content = (0..=MAX_EXTRACTED_INDICATORS)
-            .map(|number| format!("host{number}.example "))
-            .collect::<String>();
-        scanner.push_text(&content);
-        scanner.push_bytes(&[0]);
-
-        assert!(scanner.finish().is_none());
-    }
-
-    #[test]
-    fn normalizes_typed_and_dragged_paths_without_shell_processing() {
-        for (input, expected) in [
-            ("/tmp/a.txt", "/tmp/a.txt"),
-            (" '/tmp/my file.txt' ", "/tmp/my file.txt"),
-            ("\"/tmp/my file.txt\"", "/tmp/my file.txt"),
-            ("/tmp/a'b.txt", "/tmp/a'b.txt"),
-            ("/tmp/é file.txt", "/tmp/é file.txt"),
-        ] {
-            assert_eq!(
-                normalize_user_path(input).unwrap().unwrap(),
-                PathBuf::from(expected)
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_empty_and_mismatched_paths_without_rewriting_them() {
-        assert!(normalize_user_path("  ").unwrap().is_none());
-        assert!(normalize_user_path("0").unwrap().is_none());
-        assert!(normalize_user_path("'missing").is_err());
-        assert!(normalize_user_path("missing\"").is_err());
-    }
-
-    #[test]
-    fn inspection_rejects_missing_files_and_directories_cleanly() {
-        let missing =
-            std::env::temp_dir().join(format!("cyberfeed-missing-{}", std::process::id()));
-        assert!(
-            inspect_file(&missing)
-                .err()
-                .unwrap()
-                .contains("Could not open")
-        );
-        let directory = std::env::temp_dir();
-        assert!(
-            inspect_file(&directory)
-                .err()
-                .unwrap()
-                .contains("not a regular file")
-        );
-    }
-}
+mod tests;

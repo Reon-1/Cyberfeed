@@ -3,7 +3,7 @@ use crate::indicator::{Indicator, IndicatorType};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Exportable evidence for one local file inspection.
 ///
@@ -47,6 +47,8 @@ pub enum TextExtraction {
 pub struct ProviderLookup {
     pub provider: String,
     pub subject: LookupSubject,
+    /// Queried hash or other indicator value. The JSON key stays `queried_hash`
+    /// for compatibility with existing schema-version-1 report consumers.
     pub queried_hash: String,
     pub retrieved_at_unix_seconds: Option<u64>,
     pub outcome: LookupOutcome,
@@ -57,6 +59,7 @@ pub struct ProviderLookup {
 pub enum LookupSubject {
     OriginalFileSha256,
     ExtractedIndicatorSha256,
+    ExtractedIndicator,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -99,6 +102,27 @@ pub enum LookupOutcome {
     NotConfigured,
     SkippedDuplicate { references_hash: String },
     SkippedLookupLimit,
+    ThreatFoxFound { findings: Vec<ThreatFoxFinding> },
+    Unsupported { explanation: String },
+}
+
+/// Provider-neutral report data copied from ThreatFox's response at the workflow boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ThreatFoxFinding {
+    pub source_record_id: Option<String>,
+    pub ioc: String,
+    pub ioc_type: String,
+    pub ioc_type_description: Option<String>,
+    pub threat_type: Option<String>,
+    pub threat_type_description: Option<String>,
+    pub malware: Option<String>,
+    pub malware_printable: Option<String>,
+    pub confidence_level: Option<u32>,
+    pub first_seen: Option<String>,
+    pub last_seen: Option<String>,
+    pub reference: Option<String>,
+    pub reporter: Option<String>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -169,7 +193,9 @@ fn derive_summary(
             | LookupOutcome::RequestError { .. } => lookup_counts.failures += 1,
             LookupOutcome::NotConfigured
             | LookupOutcome::SkippedDuplicate { .. }
-            | LookupOutcome::SkippedLookupLimit => lookup_counts.skipped_or_unavailable += 1,
+            | LookupOutcome::SkippedLookupLimit
+            | LookupOutcome::Unsupported { .. } => lookup_counts.skipped_or_unavailable += 1,
+            LookupOutcome::ThreatFoxFound { .. } => lookup_counts.found += 1,
         }
     }
     ReportSummary {
@@ -191,6 +217,8 @@ impl LookupOutcome {
             Self::NotConfigured => "NOT CONFIGURED",
             Self::SkippedDuplicate { .. } => "SKIPPED: DUPLICATE",
             Self::SkippedLookupLimit => "SKIPPED: LOOKUP LIMIT",
+            Self::ThreatFoxFound { .. } => "FOUND",
+            Self::Unsupported { .. } => "UNSUPPORTED",
         }
     }
 }

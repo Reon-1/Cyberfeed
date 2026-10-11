@@ -68,12 +68,19 @@ fn load_one(path: &Path) -> Result<InvestigationReport, String> {
         .get("schema_version")
         .and_then(Value::as_u64)
         .ok_or_else(|| "missing or invalid schema_version".to_string())?;
-    if version != u64::from(SCHEMA_VERSION) {
+    if version != 1 && version != u64::from(SCHEMA_VERSION) {
         return Err(format!(
             "unsupported schema version {version}; this application supports {SCHEMA_VERSION}"
         ));
     }
-    serde_json::from_value(value).map_err(|error| error.to_string())
+    let mut report: InvestigationReport =
+        serde_json::from_value(value).map_err(|error| error.to_string())?;
+    // Version 2 adds typed provider outcomes and subjects; version-1 fields
+    // retain their meaning, so upgrade only the in-memory snapshot on load.
+    if version == 1 {
+        report.schema_version = SCHEMA_VERSION;
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -198,5 +205,20 @@ mod tests {
         let collection = discover(&directory.0).unwrap();
         assert_eq!(collection.reports.len(), 1);
         assert!(collection.unavailable.is_empty());
+    }
+
+    #[test]
+    fn version_one_reports_load_and_upgrade_in_memory() {
+        let directory = TestDir::new();
+        let mut old = report();
+        old.schema_version = 1;
+        fs::write(
+            directory.0.join("legacy.json"),
+            serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
+        let loaded = discover(&directory.0).unwrap();
+        assert_eq!(loaded.reports.len(), 1);
+        assert_eq!(loaded.reports[0].report.schema_version, SCHEMA_VERSION);
     }
 }

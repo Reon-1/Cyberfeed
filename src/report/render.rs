@@ -43,14 +43,19 @@ impl InvestigationReport {
             render_lookup(&mut out, lookup);
         }
 
-        out.push_str("## Extracted indicator hash lookups\n\n");
+        out.push_str("## Extracted indicator lookups\n\n");
         let extracted = self
             .provider_lookups
             .iter()
-            .filter(|lookup| lookup.subject == LookupSubject::ExtractedIndicatorSha256)
+            .filter(|lookup| {
+                matches!(
+                    lookup.subject,
+                    LookupSubject::ExtractedIndicatorSha256 | LookupSubject::ExtractedIndicator
+                )
+            })
             .collect::<Vec<_>>();
         if extracted.is_empty() {
-            out.push_str("No extracted SHA-256 indicators were queried. Extracted IP addresses and domains are not enriched by a connected provider.\n\n");
+            out.push_str("No extracted indicators were queried.\n\n");
         }
         for lookup in extracted {
             render_lookup(&mut out, lookup);
@@ -65,7 +70,7 @@ impl InvestigationReport {
 
 fn render_lookup(out: &mut String, lookup: &ProviderLookup) {
     out.push_str(&format!(
-        "### {} — {}\n\nQueried hash: `{}`\n\n",
+        "### {} — {}\n\nQueried indicator: `{}`\n\n",
         md_plain(&lookup.provider),
         lookup.outcome.status(),
         md_code(&lookup.queried_hash)
@@ -80,9 +85,38 @@ fn render_lookup(out: &mut String, lookup: &ProviderLookup) {
             LookupOutcome::Found(m) => out.push_str(&format!("- Matched SHA-256: `{}`\n- First seen: {}\n- File type: {}\n- Sample filename: {}\n- Signature: {}\n\n", md_code(&m.matched_sha256), md_plain(&m.first_seen), md_plain(&m.file_type), m.sample_filename.as_deref().map(md_plain).unwrap_or_else(|| "Not provided".into()), m.signature.as_deref().map(md_plain).unwrap_or_else(|| "Not provided".into()))),
             LookupOutcome::Invalid { explanation } | LookupOutcome::ApiError { explanation } | LookupOutcome::RequestError { explanation } => out.push_str(&format!("{}\n\n", md_plain(explanation))),
             LookupOutcome::SkippedDuplicate { references_hash } => out.push_str(&format!("Reuses the earlier result for `{}`; no second request was made.\n\n", md_code(references_hash))),
-                LookupOutcome::NotFound => out.push_str(&format!("{} returned no matching record. This does not establish that the subject is safe.\n\n", md_plain(&lookup.provider))),
+                LookupOutcome::NotFound => {
+                    out.push_str(&format!("{} returned no matching record at lookup time. This does not establish that the subject is safe.", md_plain(&lookup.provider)));
+                    if lookup.provider == "ThreatFox" { out.push_str(" ThreatFox may omit IOCs that have expired from its API dataset."); }
+                    out.push_str("\n\n");
+                }
                 LookupOutcome::NotConfigured => out.push_str(&format!("{} configuration is missing, so no request was made.\n\n", md_plain(&lookup.provider))),
                 LookupOutcome::SkippedLookupLimit => out.push_str("No request was made because the automatic lookup limit was reached.\n\n"),
+            LookupOutcome::Unsupported { explanation } => out.push_str(&format!("Lookup unsupported: {}\n\n", md_plain(explanation))),
+            LookupOutcome::ThreatFoxFound { findings } => {
+                out.push_str("ThreatFox returned matching IOC records. A record is an observation, not a verdict about the original file.\n\n");
+                for finding in findings {
+                    out.push_str(&format!("#### IOC `{}` ({})\n\n", md_code(&finding.ioc), md_plain(&finding.ioc_type)));
+                    let confidence = finding.confidence_level.map(|value| value.to_string());
+                    for (label, value) in [
+                        ("IOC type description", finding.ioc_type_description.as_deref()),
+                        ("Threat type", finding.threat_type.as_deref()),
+                        ("Threat description", finding.threat_type_description.as_deref()),
+                        ("Malware", finding.malware.as_deref()),
+                        ("Malware name", finding.malware_printable.as_deref()),
+                        ("Confidence", confidence.as_deref()),
+                        ("First seen", finding.first_seen.as_deref()),
+                        ("Last seen", finding.last_seen.as_deref()),
+                        ("Reference", finding.reference.as_deref()),
+                        ("Reporter", finding.reporter.as_deref()),
+                        ("Source record ID", finding.source_record_id.as_deref()),
+                    ] {
+                        if let Some(value) = value { out.push_str(&format!("- {}: {}\n", label, md_plain(value))); }
+                    }
+                    if !finding.tags.is_empty() { out.push_str(&format!("- Tags: {}\n", finding.tags.iter().map(|tag| md_plain(tag)).collect::<Vec<_>>().join(", "))); }
+                    out.push('\n');
+                }
+            }
         }
 }
 
