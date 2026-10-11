@@ -1,5 +1,7 @@
 mod file_workflow;
 mod menu;
+mod provider_views;
+mod saved_reports;
 mod terminal;
 mod threat_menu;
 

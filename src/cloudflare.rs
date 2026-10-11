@@ -4,7 +4,9 @@ use serde::de::{self, Deserializer};
 use std::fmt;
 use std::io::Read;
 
-use crate::ui;
+use crate::http_response::{BoundedReadError, read_bounded};
+
+const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Deserialize)]
 pub struct OriginCountry {
@@ -155,9 +157,13 @@ fn fetch_json<T: for<'de> serde::Deserialize<'de>>(
         });
     }
 
-    response
-        .json()
-        .map_err(|error| CloudflareError::Parse(error.to_string()))
+    let bytes = read_bounded(response, MAX_RESPONSE_BYTES).map_err(|error| match error {
+        BoundedReadError::Read(error) => CloudflareError::Request(error.to_string()),
+        BoundedReadError::TooLarge { limit } => {
+            CloudflareError::Parse(format!("response exceeded the {limit}-byte size limit"))
+        }
+    })?;
+    serde_json::from_slice(&bytes).map_err(|error| CloudflareError::Parse(error.to_string()))
 }
 
 fn read_error_body(response: reqwest::blocking::Response) -> String {
@@ -174,90 +180,6 @@ fn read_error_body(response: reqwest::blocking::Response) -> String {
         result.push_str("… [truncated]");
     }
     result
-}
-
-pub fn display_top_origins(data: &TopOrigins) {
-    ui::section("SOURCE COUNTRIES");
-
-    // Display each country returned by Cloudflare
-    for country in &data.top_0 {
-        let flag = ui::country_flag(&country.origin_country_alpha2);
-        let bar = percentage_bar(country.value);
-
-        ui::box_line(&format!(
-            "  #{:<2} {} {:<18} {:>6.2}%",
-            country.rank,
-            flag,
-            shorten(&country.origin_country_name, 18),
-            country.value
-        ));
-
-        ui::box_line(&format!("      {bar}"));
-    }
-}
-
-pub fn display_top_targets(data: &TopTargets) {
-    ui::section("TARGET COUNTRIES");
-
-    // Display each target country returned by Cloudflare
-    for country in &data.top_0 {
-        let flag = ui::country_flag(&country.target_country_alpha2);
-        let bar = percentage_bar(country.value);
-
-        ui::box_line(&format!(
-            "  #{:<2} {} {:<18} {:>6.2}%",
-            country.rank,
-            flag,
-            shorten(&country.target_country_name, 18),
-            country.value
-        ));
-
-        ui::box_line(&format!("      {bar}"));
-    }
-}
-
-pub fn display_top_attack_pairs(data: &TopAttackPairs) {
-    ui::section("ORIGIN → TARGET ATTACK PAIRS");
-
-    // Display where the attacks are coming from and where they are going
-    for pair in &data.top_0 {
-        let origin_flag = ui::country_flag(&pair.origin_country_alpha2);
-        let target_flag = ui::country_flag(&pair.target_country_alpha2);
-        let bar = percentage_bar(pair.value);
-
-        ui::box_line(&format!(
-            "  #{:<2} {} {} → {} {:<16} {:>6.2}%",
-            pair.rank,
-            origin_flag,
-            shorten(&pair.origin_country_name, 12),
-            target_flag,
-            shorten(&pair.target_country_name, 16),
-            pair.value
-        ));
-
-        ui::box_line(&format!("      {bar}"));
-    }
-}
-
-fn percentage_bar(value: f64) -> String {
-    // Turn the percentage into a 20-character progress bar
-    let filled = ((value / 5.0) * 20.0).round() as usize;
-
-    // Don't allow the bar to become longer than 20 characters
-    let filled = filled.min(20);
-
-    format!("[{}{}]", "█".repeat(filled), "░".repeat(20 - filled))
-}
-
-fn shorten(text: &str, max_length: usize) -> String {
-    // Shorten long country names so they don't break the terminal layout
-    if text.chars().count() <= max_length {
-        return text.to_string();
-    }
-
-    let shortened: String = text.chars().take(max_length.saturating_sub(3)).collect();
-
-    format!("{}...", shortened)
 }
 
 #[cfg(test)]

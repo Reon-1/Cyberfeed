@@ -1,4 +1,5 @@
 use super::file_workflow;
+use super::saved_reports;
 use super::terminal::{self, InputEditor};
 use super::threat_menu;
 use crate::config::Config;
@@ -47,6 +48,11 @@ pub(super) fn run(client: &Client, config: &Config) {
             "Threat Intelligence",
             "Browse external intelligence sources",
         );
+        ui::menu_item(
+            "4",
+            "Saved Reports",
+            "Browse and review saved investigations offline",
+        );
         ui::box_line("");
         ui::menu_item("0", "Exit", "Close CyberFeed");
         ui::box_line("");
@@ -72,6 +78,7 @@ pub(super) fn run(client: &Client, config: &Config) {
                 malwarebazaar_auth_key,
                 &mut investigation,
             ),
+            "4" => saved_reports::menu(&mut editor),
             "0" => {
                 terminal::clear_screen();
                 println!("Goodbye.");

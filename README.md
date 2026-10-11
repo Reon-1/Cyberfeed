@@ -74,13 +74,17 @@ Local file inspection streams the file once to calculate SHA-256 and scan readab
 
 `FOUND` means MalwareBazaar returned a record for the queried hash. `NOT FOUND` means it returned no record at lookup time; it does not establish that the hash or file is safe. `INVALID`, `API ERROR`, and `REQUEST ERROR` remain failures, not negative results. `NOT CONFIGURED` means no request was made because the optional credential is missing. Duplicate hashes reuse the earlier result, while hashes beyond the ten-unique-hash cap are marked skipped. The original file hash counts toward that cap.
 
-After the file results, choose whether to save a report. CyberFeed writes paired files with matching names under `reports/` in the process's current working directory, for example `cyberfeed-<file>-<timestamp>.md` and `.json`. It creates the directory, avoids overwriting existing reports, and confirms their paths after both writes succeed. `.gitignore` excludes this directory by default. Treat these local files as sensitive: they contain hashes, indicators, and provider outcomes.
+After the file results, choose whether to save a report. CyberFeed writes paired files with matching names under `reports/` in the process's current working directory, for example `cyberfeed-<file>-<timestamp>.md` and `.json`. It stages both files in that directory and publishes them without replacing existing paths, choosing a numeric suffix on collision. If publishing either file fails, it attempts to remove the partial pair and reports cleanup failures. Two filesystem entries cannot be committed atomically together: a process or machine interruption between publishing them can leave a partial pair or staging files. `.gitignore` excludes this directory by default. Treat these local files as sensitive: they contain hashes, indicators, and provider outcomes.
 
-The Markdown report is for people to read. The JSON report has schema version 1 and stable typed statuses for programmatic use. Both contain the same summary, local findings, and MalwareBazaar results. Neither format includes the absolute source path or credentials. Reports describe evidence only: CyberFeed does not perform full executable analysis, malware detection, structural file-format analysis, IP/domain reputation lookups, or an overall risk verdict. Manual indicators and other session evidence are not automatically included in a file report.
+Choose **Saved Reports** from the main menu (option `4`) to browse JSON reports in that same `reports/` directory. The browser loads only `.json` files into the existing versioned `InvestigationReport` model, sorts them by their recorded generation time, and displays the saved findings using the report's Markdown renderer. Reports are viewed offline: opening one does not repeat MalwareBazaar or other provider lookups. This is read-only; invalid, unreadable, malformed, or unsupported-version reports are skipped with their errors shown while other valid reports remain available. An absent or empty directory is reported clearly. The browser does not recursively search elsewhere. It supports the current schema version only.
+
+From Saved Reports, choose **Compare Reports** (or enter `C`) and select two different reports. CyberFeed labels them older and newer using their recorded UTC timestamps, then compares the extracted indicators and recorded provider outcomes for the same file SHA-256. A different SHA-256 is treated as a different subject, so the browser warns and does not show a historical findings comparison. Comparison is offline and read-only. It describes stored outcome changes (including errors and skipped lookups); `NOT FOUND` is never treated as proof of safety, and an error followed by a successful lookup is not described as a new malicious finding. Comparisons reflect only fields present in the saved report schema and cannot establish when or why the underlying file changed.
+
+The Markdown report is for people to read. The JSON report has schema version 1 and stable typed statuses for programmatic use. Both contain the same summary, local findings, and recorded provider outcomes. Neither format includes the absolute source path or credentials. Reports describe evidence only: CyberFeed does not perform full executable analysis, malware detection, structural file-format analysis, IP/domain reputation lookups, or an overall risk verdict. Manual indicators and other session evidence are not automatically included in a file report.
 
 ## Using the menus
 
-The main menu offers **Check a File**, **Investigation**, **Threat Intelligence**, and **Exit**. The Investigation menu lets you add a manual indicator or review evidence collected during the current run. Manual input accepts MD5, SHA-1, and SHA-256 hashes, IP addresses, and domains. Hashes can be checked with MalwareBazaar when configured; IP addresses and domains are classified and retained locally, but have no connected lookup provider. Evidence stays in memory for the current run unless it is part of a saved file report.
+The main menu offers **Check a File**, **Investigation**, **Threat Intelligence**, **Saved Reports**, and **Exit**. The Investigation menu lets you add a manual indicator or review evidence collected during the current run. Manual input accepts MD5, SHA-1, and SHA-256 hashes, IP addresses, and domains. Hashes can be checked with MalwareBazaar when configured; IP addresses and domains are classified and retained locally, but have no connected lookup provider. Evidence stays in memory for the current run unless it is part of a saved file report.
 
 Threat Intelligence opens the MalwareBazaar and Cloudflare Radar menus. MalwareBazaar provides recent samples, country filtering, and individual hash lookups. Cloudflare Radar shows general Layer 7 attack origins, targets, and origin-target pairs. Its refresh intervals are 5 seconds, 10 seconds, 30 seconds, 1 minute, or 5 minutes; each live view performs at most five refreshes, and `Esc` or `q` stops the refresh loop. Radar data is not evidence about an individual file.
 
@@ -95,14 +99,23 @@ At the main menu, `0` exits. In submenus, `0` goes back; at file, indicator, cou
 | `app.rs` | Small application entry point delegating to the app modules below |
 | `app/menu.rs` | Main menu, session-owned investigation state, and navigation |
 | `app/file_workflow.rs` | Local file investigation, manual indicator checks, evidence review |
+| `app/provider_views.rs` | Terminal presentation of provider results, separate from HTTP clients |
+| `app/saved_reports.rs` | Saved Reports menu orchestration and navigation |
+| `app/saved_reports/report_files.rs` | Local JSON discovery, schema validation, and timestamp sorting |
+| `app/saved_reports/comparison.rs` | Pure comparison of structured report findings and provider results |
+| `app/saved_reports/view.rs` | Saved report lists, details, comparison rendering, and display formatting |
 | `app/threat_menu.rs` | MalwareBazaar and Cloudflare menus and refresh coordination |
 | `app/terminal.rs` | Rustyline setup, prompts, terminal helpers, live-refresh key handling |
 | `file.rs` | Path normalization, streamed SHA-256, bounded text-indicator extraction |
+| `http_response.rs` | Bounded provider response-body reading |
 | `indicator.rs` | Indicator model, source-specific hash rules, classification |
 | `investigation.rs` | In-memory evidence deduplication and display |
-| `report.rs` | Versioned report data, Markdown/JSON rendering, collision-safe local saving |
+| `report.rs` | Public report API and versioned report data |
+| `report/model.rs` | Schema version 1 structures and derived summary |
+| `report/render.rs` | Escaped Markdown rendering of stored evidence |
+| `report/storage.rs` | Collision-safe paired report persistence and cleanup |
 | `malwarebazaar.rs` | MalwareBazaar requests, response parsing, lookup states |
-| `cloudflare.rs` | Cloudflare Radar requests, response parsing, feed display |
+| `cloudflare.rs` | Cloudflare Radar requests and response parsing |
 | `ui.rs` | Box layout, wrapping, terminal formatting |
 
 ## File investigation flow

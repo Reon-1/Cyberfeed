@@ -2,6 +2,7 @@ mod app;
 mod cloudflare;
 mod config;
 mod file;
+mod http_response;
 mod indicator;
 mod investigation;
 mod malwarebazaar;

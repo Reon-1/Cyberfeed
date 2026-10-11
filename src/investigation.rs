@@ -2,12 +2,18 @@ use crate::indicator::{Indicator, IndicatorType};
 use crate::ui;
 use std::collections::HashSet;
 
+/// Indicators collected during the current CLI run.
+///
+/// This session model intentionally stores only typed indicator values. File
+/// observations and provider lookup outcomes belong to `InvestigationReport`,
+/// which describes one file check; conflating the two would lose that context.
 pub struct Investigation {
     indicators: Vec<Indicator>,
     seen: HashSet<Indicator>,
 }
 
 impl Investigation {
+    /// Starts an empty, in-memory investigation session.
     pub fn new() -> Self {
         Self {
             indicators: Vec::new(),
@@ -24,6 +30,8 @@ impl Investigation {
     pub fn add_indicator(&mut self, value: impl Into<String>, indicator_type: IndicatorType) {
         let indicator = Indicator::new(value, indicator_type);
         let key = normalized_key(&indicator);
+        // Keep the user's first spelling and insertion order for display, while
+        // comparing hashes and domains case-insensitively for deduplication.
         if self.seen.insert(Indicator::new(key, indicator_type)) {
             self.indicators.push(indicator);
         }

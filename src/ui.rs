@@ -249,7 +249,8 @@ pub fn error(message: &str) {
     box_line(&format!("{ERROR}×{RESET}  {message}"));
 }
 
-fn content_width() -> usize {
+/// Inner panel width for layouts that need to wrap text before rendering it.
+pub fn content_width() -> usize {
     frame_geometry().0
 }
 

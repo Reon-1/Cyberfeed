@@ -179,7 +179,7 @@ impl TextScanner {
             if character.is_whitespace() {
                 self.finish_token();
             } else if !self.invalid_token
-                && (character.is_ascii_alphanumeric() || matches!(character, '.' | '-'))
+                && (character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | ':'))
             {
                 if self.trailing_punctuation {
                     self.invalid_token = true;
@@ -217,21 +217,23 @@ impl TextScanner {
     }
 
     fn finish_token(&mut self) {
+        let token = self.token.strip_suffix(':').unwrap_or(&self.token);
+        let classified = classify(&self.token, EXTRACTED_HASH_LENGTHS)
+            .or_else(|| classify(token, EXTRACTED_HASH_LENGTHS));
         if self.started
             && !self.invalid_token
-            && let Some(indicator_type) = classify(&self.token, EXTRACTED_HASH_LENGTHS)
+            && let Some(indicator_type) = classified
         {
             let key = match indicator_type {
                 crate::indicator::IndicatorType::Hash | crate::indicator::IndicatorType::Domain => {
-                    self.token.to_ascii_lowercase()
+                    token.to_ascii_lowercase()
                 }
-                crate::indicator::IndicatorType::IP => self.token.clone(),
+                crate::indicator::IndicatorType::IP => token.to_string(),
             };
             if !self.seen.contains(&key) && self.indicators.len() == MAX_EXTRACTED_INDICATORS {
                 self.limit_reached = true;
             } else if self.seen.insert(key) {
-                self.indicators
-                    .push(Indicator::new(self.token.clone(), indicator_type));
+                self.indicators.push(Indicator::new(token, indicator_type));
             }
         }
         self.token.clear();
@@ -280,6 +282,22 @@ mod tests {
         );
 
         fs::remove_file(path).expect("test file should be removable");
+    }
+
+    #[test]
+    fn extracted_ipv6_uses_the_same_classifier_as_manual_input() {
+        let mut scanner = TextScanner::default();
+        scanner.push_text("2001:db8::1 example.test:");
+        scanner.finish_token();
+        let extracted = scanner.finish().expect("input should be text");
+        assert_eq!(extracted.indicators.len(), 2);
+        assert_eq!(extracted.indicators[0].value, "2001:db8::1");
+        assert_eq!(extracted.indicators[0].indicator_type, IndicatorType::IP);
+        assert_eq!(extracted.indicators[1].value, "example.test");
+        assert_eq!(
+            extracted.indicators[1].indicator_type,
+            IndicatorType::Domain
+        );
     }
 
     #[test]

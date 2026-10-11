@@ -1,10 +1,13 @@
+use super::provider_views::display_hash_lookup;
 use super::terminal::{self, InputEditor};
 use crate::file::{FileInfo, format_size, inspect_file, normalize_user_path};
 use crate::indicator::{IndicatorType, MANUAL_HASH_LENGTHS, classify};
 use crate::investigation::Investigation;
-use crate::malwarebazaar::{display_hash_lookup, lookup_malware_hash};
+use crate::malwarebazaar::{
+    MalwareLookupError, MalwareLookupResult, MalwareSample, lookup_malware_hash,
+};
 use crate::report::{
-    self, InvestigationReport, LookupOutcome, LookupSubject, ProviderLookup, outcome_from_result,
+    self, InvestigationReport, LookupOutcome, LookupSubject, MatchDetails, ProviderLookup,
 };
 use crate::ui;
 use reqwest::blocking::Client;
@@ -135,6 +138,8 @@ pub(super) fn investigate_file(
             .as_ref()
             .map(|text| text.indicators.clone())
             .unwrap_or_default();
+        // Build the export snapshot from this file's findings and lookups. The
+        // session collection is separate and may also contain unrelated inputs.
         let report = InvestigationReport::new(&file, indicators, extraction, lookups);
         match report::save_report(&report, std::path::Path::new("reports")) {
             Ok((json, markdown)) => {
@@ -229,7 +234,41 @@ fn lookup_hash_record(client: &Client, auth_key: &str, hash: &str) -> LookupOutc
             ui::field("Details", error);
         }
     }
-    outcome_from_result(result)
+    outcome_from_malwarebazaar_result(result)
+}
+
+/// Adapt the provider's response types into the shared evidence model at the
+/// workflow boundary, keeping report serialization independent of the client.
+fn outcome_from_malwarebazaar_result(
+    result: Result<MalwareLookupResult, MalwareLookupError>,
+) -> LookupOutcome {
+    match result {
+        Ok(MalwareLookupResult::Found(sample)) => {
+            LookupOutcome::Found(malware_sample_details(sample))
+        }
+        Ok(MalwareLookupResult::NotFound) => LookupOutcome::NotFound,
+        Ok(MalwareLookupResult::InvalidHash(explanation)) => LookupOutcome::Invalid { explanation },
+        Ok(MalwareLookupResult::ApiError(explanation)) => LookupOutcome::ApiError { explanation },
+        Err(MalwareLookupError::Request(message)) => LookupOutcome::RequestError {
+            explanation: message.replace(['\n', '\r'], " "),
+        },
+        Err(MalwareLookupError::Http { status, .. }) => LookupOutcome::ApiError {
+            explanation: format!("MalwareBazaar returned HTTP {status}."),
+        },
+        Err(MalwareLookupError::Parse(message)) => LookupOutcome::ApiError {
+            explanation: format!("Could not parse MalwareBazaar response: {message}"),
+        },
+    }
+}
+
+fn malware_sample_details(sample: MalwareSample) -> MatchDetails {
+    MatchDetails {
+        matched_sha256: sample.sha256_hash,
+        first_seen: sample.first_seen,
+        file_type: sample.file_type,
+        sample_filename: (!sample.file_name.is_empty()).then_some(sample.file_name),
+        signature: sample.signature,
+    }
 }
 
 fn now_seconds() -> u64 {
@@ -342,7 +381,11 @@ pub(super) fn view_indicators(investigation: &Investigation) {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_AUTOMATIC_MALWAREBAZAAR_LOOKUPS, should_lookup_hash};
+    use super::{
+        MAX_AUTOMATIC_MALWAREBAZAAR_LOOKUPS, outcome_from_malwarebazaar_result, should_lookup_hash,
+    };
+    use crate::malwarebazaar::{MalwareLookupError, MalwareLookupResult, MalwareSample};
+    use crate::report::LookupOutcome;
     use std::collections::HashSet;
 
     #[test]
@@ -369,5 +412,37 @@ mod tests {
         }
         assert_eq!(looked_up.len(), MAX_AUTOMATIC_MALWAREBAZAAR_LOOKUPS);
         assert!(!should_lookup_hash(&mut looked_up, "one-too-many"));
+    }
+
+    #[test]
+    fn provider_adapter_preserves_success_and_failure_categories() {
+        let sample = MalwareSample {
+            sha256_hash: "sha256".into(),
+            first_seen: "2026-01-01".into(),
+            file_name: "sample.bin".into(),
+            file_type: "exe".into(),
+            origin_country: None,
+            signature: Some("Example".into()),
+        };
+        assert!(matches!(
+            outcome_from_malwarebazaar_result(Ok(MalwareLookupResult::Found(sample))),
+            LookupOutcome::Found(details)
+                if details.matched_sha256 == "sha256" && details.sample_filename.as_deref() == Some("sample.bin")
+        ));
+        assert_eq!(
+            outcome_from_malwarebazaar_result(Ok(MalwareLookupResult::NotFound)),
+            LookupOutcome::NotFound
+        );
+        assert!(matches!(
+            outcome_from_malwarebazaar_result(Err(MalwareLookupError::Request("timeout".into()))),
+            LookupOutcome::RequestError { .. }
+        ));
+        assert!(matches!(
+            outcome_from_malwarebazaar_result(Err(MalwareLookupError::Http {
+                status: 429,
+                body: "detail".into(),
+            })),
+            LookupOutcome::ApiError { explanation } if explanation.contains("429")
+        ));
     }
 }
