@@ -32,8 +32,8 @@ impl Investigation {
     pub fn add_indicator(&mut self, value: impl Into<String>, indicator_type: IndicatorType) {
         let indicator = Indicator::new(value, indicator_type);
         let key = normalized_key(&indicator);
-        // Keep the user's first spelling and insertion order for display, while
-        // comparing hashes and domains case-insensitively for deduplication.
+        // Keep the user's first spelling and insertion order for display.
+        // Hashes/domains are case-insensitive; URL paths and queries are not.
         if self.seen.insert(Indicator::new(key, indicator_type)) {
             self.indicators.push(indicator);
         }
@@ -71,6 +71,7 @@ fn normalized_key(indicator: &Indicator) -> String {
     match indicator.indicator_type {
         IndicatorType::Hash | IndicatorType::Domain => indicator.value.to_ascii_lowercase(),
         IndicatorType::IP => indicator.value.clone(),
+        IndicatorType::Url => indicator.value.clone(),
     }
 }
 

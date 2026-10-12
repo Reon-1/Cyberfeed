@@ -11,7 +11,7 @@ const INVESTIGATION_MENU_OPTIONS: [(&str, &str, &str); 3] = [
     (
         "1",
         "Check an Indicator",
-        "Add a hash, IP address, or domain to this investigation",
+        "Add a hash, IP address, domain, or URL to this investigation",
     ),
     (
         "2",

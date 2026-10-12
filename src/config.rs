@@ -1,4 +1,4 @@
-/// Optional credentials; the abuse.ch key is shared by MalwareBazaar and ThreatFox.
+/// Optional credentials; the abuse.ch key is shared by MalwareBazaar, ThreatFox, and URLhaus.
 pub struct Config {
     pub cloudflare_token: Option<String>,
     pub abusech_auth_key: Option<String>,
@@ -21,8 +21,8 @@ fn non_blank(value: Option<String>) -> Option<String> {
 mod tests {
     use super::Config;
     use crate::indicator::{Indicator, IndicatorType};
-    use crate::malwarebazaar::build_hash_lookup_request;
-    use crate::threatfox::{build_lookup_request, request_for_indicator};
+    use crate::providers::malwarebazaar::build_hash_lookup_request;
+    use crate::providers::threatfox::{build_lookup_request, request_for_indicator};
     use reqwest::blocking::Client;
 
     #[test]

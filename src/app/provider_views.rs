@@ -1,13 +1,14 @@
 //! Terminal presentation for provider data; request and parsing code stays in provider modules.
-use crate::cloudflare::{TopAttackPairs, TopOrigins, TopTargets};
 use crate::indicator::{Indicator, IndicatorType};
-use crate::malwarebazaar::{MalwareResponse, MalwareSample};
+use crate::providers::cloudflare::{TopAttackPairs, TopOrigins, TopTargets};
+use crate::providers::malwarebazaar::{MalwareResponse, MalwareSample};
 use crate::report::{LookupOutcome, MatchDetails};
 use crate::ui;
 
 pub(crate) fn display_lookup(provider: &str, indicator: &str, outcome: &LookupOutcome) {
     let status = outcome.status();
     ui::status(provider, status, status_kind(outcome));
+    ui::field("Meaning", ui::outcome_explanation(outcome));
     ui::field("Indicator", indicator);
     match outcome {
         LookupOutcome::Found(details) => display_malwarebazaar_match(details),
@@ -82,7 +83,8 @@ pub(crate) fn display_lookup(provider: &str, indicator: &str, outcome: &LookupOu
                 );
             }
         }
-        LookupOutcome::NotFound => ui::field("Meaning", "No record returned at lookup time."),
+        LookupOutcome::UrlhausFound { details } => display_urlhaus_details(details),
+        LookupOutcome::NotFound => {}
         LookupOutcome::Invalid { explanation }
         | LookupOutcome::ApiError { explanation }
         | LookupOutcome::RequestError { explanation }
@@ -118,6 +120,7 @@ pub(crate) fn display_lookup_details(
 ) {
     ui::section(provider);
     ui::status("Outcome", outcome.status(), status_kind(outcome));
+    ui::field("Meaning", ui::outcome_explanation(outcome));
     match outcome {
         LookupOutcome::Found(details) => {
             if details.matched_sha256 != selected_indicator {
@@ -158,7 +161,8 @@ pub(crate) fn display_lookup_details(
                 }
             }
         }
-        LookupOutcome::NotFound => ui::field("Meaning", "No record returned at lookup time."),
+        LookupOutcome::UrlhausFound { details } => display_urlhaus_details(details),
+        LookupOutcome::NotFound => {}
         LookupOutcome::Invalid { explanation }
         | LookupOutcome::ApiError { explanation }
         | LookupOutcome::RequestError { explanation }
@@ -191,6 +195,31 @@ fn present_field(label: &str, value: Option<&str>) {
     }
 }
 
+fn display_urlhaus_details(details: &crate::report::UrlhausLookupDetails) {
+    present_field("URLhaus reference", details.reference.as_deref());
+    present_field("Queried host", details.queried_host.as_deref());
+    present_field("Payload MD5", details.md5_hash.as_deref());
+    present_field("Payload SHA-256", details.sha256_hash.as_deref());
+    present_field("File type", details.file_type.as_deref());
+    present_field("First seen", details.first_seen.as_deref());
+    present_field("Last seen", details.last_seen.as_deref());
+    for (index, record) in details.associated_urls.iter().enumerate() {
+        ui::field("Associated URL", format!("{}. {}", index + 1, record.url));
+        present_field("URL status", record.status.as_deref());
+        present_field("URLhaus reference", record.reference.as_deref());
+        present_field("Host", record.host.as_deref());
+        present_field("Threat", record.threat.as_deref());
+        if !record.tags.is_empty() {
+            ui::field("Tags", record.tags.join(", "));
+        }
+    }
+    if details.associated_urls.is_empty()
+        && let Some(count) = details.associated_url_count
+    {
+        ui::field("Associated URL records", count);
+    }
+}
+
 fn display_malwarebazaar_match(details: &MatchDetails) {
     ui::field("Matched SHA-256", &details.matched_sha256);
     ui::field("First seen", &details.first_seen);
@@ -206,19 +235,7 @@ fn display_malwarebazaar_match(details: &MatchDetails) {
 }
 
 pub(crate) fn status_kind(outcome: &LookupOutcome) -> ui::Status {
-    match outcome {
-        // FOUND is a positive match observation from a provider, not a safety
-        // assessment of the file that contained or produced the indicator.
-        LookupOutcome::Found(_) | LookupOutcome::ThreatFoxFound { .. } => ui::Status::Success,
-        LookupOutcome::Invalid { .. }
-        | LookupOutcome::ApiError { .. }
-        | LookupOutcome::RequestError { .. } => ui::Status::Error,
-        LookupOutcome::NotFound
-        | LookupOutcome::NotConfigured
-        | LookupOutcome::SkippedDuplicate { .. }
-        | LookupOutcome::SkippedLookupLimit
-        | LookupOutcome::Unsupported { .. } => ui::Status::Warning,
-    }
+    ui::outcome_style(outcome)
 }
 
 // Display the malware data in the terminal.
@@ -425,7 +442,7 @@ fn percentage_bar(value: f64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::status_kind;
+    use super::{display_lookup_details, status_kind};
     use crate::report::LookupOutcome;
     use crate::ui::Status;
 
@@ -439,11 +456,11 @@ mod tests {
                 sample_filename: None,
                 signature: None,
             })),
-            Status::Success
+            Status::Warning
         ));
         assert!(matches!(
             status_kind(&LookupOutcome::NotFound),
-            Status::Warning
+            Status::Neutral
         ));
         assert!(matches!(
             status_kind(&LookupOutcome::NotConfigured),
@@ -451,7 +468,7 @@ mod tests {
         ));
         assert!(matches!(
             status_kind(&LookupOutcome::SkippedLookupLimit),
-            Status::Warning
+            Status::Neutral
         ));
         assert!(matches!(
             status_kind(&LookupOutcome::RequestError {
@@ -459,5 +476,37 @@ mod tests {
             }),
             Status::Error
         ));
+    }
+
+    #[test]
+    fn provider_detail_has_one_plain_meaning_and_technical_error_details() {
+        for outcome in [
+            LookupOutcome::NotFound,
+            LookupOutcome::RequestError {
+                explanation: "connection closed before message completed".into(),
+            },
+            LookupOutcome::NotConfigured,
+            LookupOutcome::SkippedLookupLimit,
+            LookupOutcome::Unsupported {
+                explanation: "SHA-1 is not supported".into(),
+            },
+        ] {
+            crate::ui::reset_screen();
+            display_lookup_details("URLhaus", "example", &outcome);
+            let lines = crate::ui::recorded_line_texts();
+            assert_eq!(
+                lines.iter().filter(|line| line.contains("Meaning")).count(),
+                1,
+                "outcome {outcome:?} should have one explanation"
+            );
+            assert!(
+                !lines
+                    .iter()
+                    .any(|line| line.contains("No record returned at lookup time"))
+            );
+            if matches!(outcome, LookupOutcome::RequestError { .. }) {
+                assert!(lines.iter().any(|line| line.contains("Details")));
+            }
+        }
     }
 }

@@ -3,10 +3,12 @@ use serde::Deserialize;
 use serde::de::{self, Deserializer};
 use std::fmt;
 use std::io::Read;
+use std::time::Duration;
 
 use crate::http_response::{BoundedReadError, read_bounded};
 
 const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Deserialize)]
 pub struct OriginCountry {
@@ -109,9 +111,13 @@ where
     let value = String::deserialize(deserializer)?;
 
     // Convert the String into a floating-point number
-    value
+    let parsed = value
         .parse::<f64>()
-        .map_err(|error| de::Error::custom(error.to_string()))
+        .map_err(|error| de::Error::custom(error.to_string()))?;
+    if !parsed.is_finite() {
+        return Err(de::Error::custom("percentage must be a finite number"));
+    }
+    Ok(parsed)
 }
 
 pub fn fetch_cloudflare_data(
@@ -145,12 +151,21 @@ fn fetch_json<T: for<'de> serde::Deserialize<'de>>(
 ) -> Result<CloudflareResponse<T>, CloudflareError> {
     let response = client
         .get(url)
+        .timeout(REQUEST_TIMEOUT)
         .bearer_auth(token)
         .send()
-        .map_err(|error| CloudflareError::Request(error.to_string()))?;
+        .map_err(|error| {
+            let timed_out = error.is_timeout();
+            let message = redact(&error.without_url().to_string(), token);
+            CloudflareError::Request(if timed_out {
+                format!("request timed out: {message}")
+            } else {
+                message
+            })
+        })?;
     let status = response.status();
     if !status.is_success() {
-        let body = read_error_body(response);
+        let body = redact(&read_error_body(response), token);
         return Err(CloudflareError::Http {
             status: status.as_u16(),
             body,
@@ -158,12 +173,23 @@ fn fetch_json<T: for<'de> serde::Deserialize<'de>>(
     }
 
     let bytes = read_bounded(response, MAX_RESPONSE_BYTES).map_err(|error| match error {
+        BoundedReadError::Read(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+            CloudflareError::Request(format!("response body read timed out: {error}"))
+        }
         BoundedReadError::Read(error) => CloudflareError::Request(error.to_string()),
         BoundedReadError::TooLarge { limit } => {
             CloudflareError::Parse(format!("response exceeded the {limit}-byte size limit"))
         }
     })?;
     serde_json::from_slice(&bytes).map_err(|error| CloudflareError::Parse(error.to_string()))
+}
+
+fn redact(message: &str, token: &str) -> String {
+    if token.is_empty() {
+        message.to_owned()
+    } else {
+        message.replace(token, "[redacted]")
+    }
 }
 
 fn read_error_body(response: reqwest::blocking::Response) -> String {
@@ -184,7 +210,15 @@ fn read_error_body(response: reqwest::blocking::Response) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CloudflareResponse, TopAttackPairs, TopOrigins, TopTargets};
+    use super::{CloudflareResponse, TopAttackPairs, TopOrigins, TopTargets, redact};
+
+    #[test]
+    fn provider_errors_redact_bearer_tokens() {
+        assert_eq!(
+            redact("remote echoed private-token", "private-token"),
+            "remote echoed [redacted]"
+        );
+    }
 
     #[test]
     fn parses_all_radar_feed_shapes() {
@@ -203,5 +237,13 @@ mod tests {
             serde_json::from_str(r#"{"success":true,"result":{"top_0":[]}}"#)
                 .expect("attack pair response should parse");
         assert!(pairs.result.top_0.is_empty());
+    }
+
+    #[test]
+    fn rejects_non_finite_percentage_values() {
+        let response: Result<CloudflareResponse<TopOrigins>, _> = serde_json::from_str(
+            r#"{"success":true,"result":{"top_0":[{"originCountryAlpha2":"NP","originCountryName":"Nepal","value":"NaN","rank":1}]}}"#,
+        );
+        assert!(response.is_err());
     }
 }

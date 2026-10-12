@@ -1,6 +1,6 @@
 //! ThreatFox Community API client and typed response parsing.
 use crate::http_response::{BoundedReadError, read_bounded};
-use crate::indicator::{Indicator, IndicatorType, classify};
+use crate::indicator::{Indicator, IndicatorType, classify, is_http_url};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -103,7 +103,7 @@ impl fmt::Display for ThreatFoxError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Request(message) => write!(f, "ThreatFox request failed: {message}"),
-            Self::Http { status, body } => write!(f, "ThreatFox returned HTTP {status}: {body}"),
+            Self::Http { status, body: _ } => write!(f, "ThreatFox returned HTTP {status}"),
             Self::Parse(message) => write!(f, "Could not parse ThreatFox response: {message}"),
         }
     }
@@ -145,6 +145,17 @@ pub fn request_for_indicator(
                 )),
             }
         }
+        IndicatorType::Url if is_http_url(&indicator.value) => {
+            Ok(ThreatFoxRequest::Ioc(SearchIoc {
+                query: "search_ioc",
+                // Preserve the full IOC exactly, including path and query casing.
+                search_term: indicator.value.clone(),
+                exact_match: true,
+            }))
+        }
+        IndicatorType::Url => Err(ThreatFoxLookupResult::InvalidInput(
+            "value is not a complete HTTP or HTTPS URL".into(),
+        )),
     }
 }
 
@@ -162,9 +173,15 @@ pub fn lookup_indicator(
     };
     let request = build_lookup_request(client, auth_key, &request)
         .map_err(|error| ThreatFoxError::Request(error.to_string()))?;
-    let response = client
-        .execute(request)
-        .map_err(|error| ThreatFoxError::Request(error.to_string()))?;
+    let response = client.execute(request).map_err(|error| {
+        let timed_out = error.is_timeout();
+        let message = error.without_url().to_string();
+        ThreatFoxError::Request(if timed_out {
+            format!("request timed out: {message}")
+        } else {
+            message
+        })
+    })?;
     let status = response.status();
     if !status.is_success() {
         return Err(ThreatFoxError::Http {
@@ -173,6 +190,9 @@ pub fn lookup_indicator(
         });
     }
     let bytes = read_bounded(response, MAX_RESPONSE_BYTES).map_err(|error| match error {
+        BoundedReadError::Read(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+            ThreatFoxError::Request(format!("response body read timed out: {error}"))
+        }
         BoundedReadError::Read(error) => ThreatFoxError::Request(error.to_string()),
         BoundedReadError::TooLarge { limit } => {
             ThreatFoxError::Parse(format!("response exceeded the {limit}-byte size limit"))
@@ -194,6 +214,7 @@ pub(crate) fn build_lookup_request(
         .post(ENDPOINT)
         .timeout(LOOKUP_TIMEOUT)
         .header("Auth-Key", auth_key)
+        .header(reqwest::header::CONNECTION, "close")
         .json(&request)
         .build()
 }
@@ -353,6 +374,21 @@ mod tests {
         assert!(matches!(
             request_for_indicator(&sha1),
             Err(ThreatFoxLookupResult::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn full_url_request_preserves_scheme_path_query_and_case() {
+        let value = "https://Example.test/A/Case?Token=AbC";
+        let url = Indicator::new(value, IndicatorType::Url);
+        let request = request_for_indicator(&url).unwrap();
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({"query":"search_ioc","search_term":value,"exact_match":true})
+        );
+        assert!(matches!(
+            request_for_indicator(&Indicator::new("ftp://example.test/A", IndicatorType::Url)),
+            Err(ThreatFoxLookupResult::InvalidInput(_))
         ));
     }
 

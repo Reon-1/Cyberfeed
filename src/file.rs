@@ -1,4 +1,4 @@
-use crate::indicator::{EXTRACTED_HASH_LENGTHS, Indicator, classify};
+use crate::indicator::{Indicator, MANUAL_HASH_LENGTHS, classify};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::File;
@@ -23,6 +23,10 @@ pub struct TextIndicators {
 }
 
 const MAX_EXTRACTED_INDICATORS: usize = 10_000;
+const MAX_URL_INDICATOR_BYTES: usize = 2_048;
+/// Keep the worst-case repeated URL evidence compatible with the saved-report
+/// reader's 32 MiB cap alongside the 10,000-item general extraction limit.
+const MAX_EXTRACTED_URLS: usize = 1_000;
 
 // Hash and scan the same read-only byte stream so the evidence corresponds to
 // the bytes that produced the file hash.
@@ -92,9 +96,14 @@ fn decode_terminal_escapes(input: &str) -> String {
 fn decode_file_uri(input: &str) -> Option<PathBuf> {
     let path = input.strip_prefix("file://")?;
     // A local file URI may include an explicit localhost authority.
-    let path = path
-        .strip_prefix("localhost/")
-        .map_or_else(|| path.to_owned(), |rest| format!("/{rest}"));
+    let path = if let Some(rest) = path.strip_prefix("localhost/") {
+        format!("/{rest}")
+    } else if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        // Do not reinterpret a remote URI authority as a relative local path.
+        return None;
+    };
     let bytes = path.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -181,6 +190,7 @@ struct TextScanner {
     limit_reached: bool,
     indicators: Vec<Indicator>,
     seen: HashSet<String>,
+    url_count: usize,
 }
 
 impl Default for TextScanner {
@@ -195,6 +205,7 @@ impl Default for TextScanner {
             limit_reached: false,
             indicators: Vec::new(),
             seen: HashSet::new(),
+            url_count: 0,
         }
     }
 }
@@ -236,15 +247,18 @@ impl TextScanner {
             }
             if character.is_whitespace() {
                 self.finish_token();
-            } else if !self.invalid_token
-                && (character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | ':'))
-            {
+            } else if !self.invalid_token && is_indicator_character(character, &self.token) {
                 if self.trailing_punctuation {
                     self.invalid_token = true;
                     continue;
                 }
                 self.started = true;
-                if self.token.len() < 253 {
+                let maximum = if is_url_candidate(&self.token) {
+                    MAX_URL_INDICATOR_BYTES
+                } else {
+                    253
+                };
+                if self.token.len() + character.len_utf8() <= maximum {
                     self.token.push(character);
                 } else {
                     self.invalid_token = true;
@@ -261,6 +275,7 @@ impl TextScanner {
         self.token.clear();
         self.indicators.clear();
         self.seen.clear();
+        self.url_count = 0;
     }
 
     fn finish(mut self) -> Option<TextIndicators> {
@@ -275,23 +290,59 @@ impl TextScanner {
     }
 
     fn finish_token(&mut self) {
+        let url_token = trim_url_punctuation(&self.token);
         let token = self.token.strip_suffix(':').unwrap_or(&self.token);
-        let classified = classify(&self.token, EXTRACTED_HASH_LENGTHS)
-            .or_else(|| classify(token, EXTRACTED_HASH_LENGTHS));
+        let unbracketed = token
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap_or(token);
+
+        let (value, classified) = if classify(url_token, MANUAL_HASH_LENGTHS)
+            == Some(crate::indicator::IndicatorType::Url)
+        {
+            (
+                url_token.to_string(),
+                Some(crate::indicator::IndicatorType::Url),
+            )
+        } else if let Some(classified) = classify(&self.token, MANUAL_HASH_LENGTHS)
+            .or_else(|| classify(token, MANUAL_HASH_LENGTHS))
+            .or_else(|| classify(unbracketed, MANUAL_HASH_LENGTHS))
+        {
+            (unbracketed.to_string(), Some(classified))
+        } else if let Ok(socket) = token.parse::<std::net::SocketAddr>() {
+            // When an IP endpoint with a port (e.g. 185.112.146.10:8080 or [2001:db8::1]:8080)
+            // is found in inspected text, extract the bare host IP address. Threat intelligence
+            // lookups index IP addresses, not transport ports; CyberFeed records the queried IP indicator.
+            (
+                socket.ip().to_string(),
+                Some(crate::indicator::IndicatorType::IP),
+            )
+        } else {
+            (token.to_string(), None)
+        };
+
         if self.started
             && !self.invalid_token
             && let Some(indicator_type) = classified
         {
             let key = match indicator_type {
                 crate::indicator::IndicatorType::Hash | crate::indicator::IndicatorType::Domain => {
-                    token.to_ascii_lowercase()
+                    value.to_ascii_lowercase()
                 }
-                crate::indicator::IndicatorType::IP => token.to_string(),
+                crate::indicator::IndicatorType::IP => value.clone(),
+                crate::indicator::IndicatorType::Url => value.clone(),
             };
-            if !self.seen.contains(&key) && self.indicators.len() == MAX_EXTRACTED_INDICATORS {
+            if !self.seen.contains(&key)
+                && (self.indicators.len() == MAX_EXTRACTED_INDICATORS
+                    || (indicator_type == crate::indicator::IndicatorType::Url
+                        && self.url_count == MAX_EXTRACTED_URLS))
+            {
                 self.limit_reached = true;
             } else if self.seen.insert(key) {
-                self.indicators.push(Indicator::new(token, indicator_type));
+                if indicator_type == crate::indicator::IndicatorType::Url {
+                    self.url_count += 1;
+                }
+                self.indicators.push(Indicator::new(value, indicator_type));
             }
         }
         self.token.clear();
@@ -299,6 +350,46 @@ impl TextScanner {
         self.trailing_punctuation = false;
         self.invalid_token = false;
     }
+}
+
+fn is_indicator_character(character: char, token: &str) -> bool {
+    if character.is_ascii_alphanumeric() || matches!(character, '.' | '-') {
+        return true;
+    }
+    if character == ':' {
+        return true;
+    }
+    if character == '[' && token.is_empty() {
+        return true;
+    }
+    if character == ']' && token.starts_with('[') && !token.contains(']') {
+        return true;
+    }
+    if url_scheme_prefix(token) {
+        return character.is_ascii_graphic() && !matches!(character, '<' | '>' | '"' | '\'');
+    }
+    false
+}
+
+fn url_scheme_prefix(token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    let token = token.to_ascii_lowercase();
+    "http://".starts_with(&token) || "https://".starts_with(&token) || is_url_candidate(&token)
+}
+
+fn is_url_candidate(token: &str) -> bool {
+    token
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+        || token
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+}
+
+fn trim_url_punctuation(token: &str) -> &str {
+    token.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}'])
 }
 
 #[cfg(test)]

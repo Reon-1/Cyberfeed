@@ -6,7 +6,7 @@ impl InvestigationReport {
     pub fn to_markdown(&self) -> String {
         let mut out =
             String::from("# CyberFeed Investigation Report\n\n## Investigation summary\n\n");
-        out.push_str(&format!("- File: `{}` ({} bytes)\n- Original file SHA-256: `{}`\n- Original file lookup: {}\n- Extracted indicators: {} hashes, {} IP addresses, {} domains\n- Extracted hash lookups: {} found, {} not found, {} failed, {} skipped or unavailable\n- Extraction limit reached: {}\n- Generated at: {} seconds since the Unix epoch (UTC)\n\nCyberFeed read the file locally as data; it did not execute or upload it.\n\n", md_code(&self.file.filename), self.file.size_bytes, md_code(&self.file.sha256), self.summary.original_file_lookup_status.as_deref().unwrap_or("not recorded"), self.summary.extracted_indicator_counts.hashes, self.summary.extracted_indicator_counts.ip_addresses, self.summary.extracted_indicator_counts.domains, self.summary.extracted_hash_lookup_counts.found, self.summary.extracted_hash_lookup_counts.not_found, self.summary.extracted_hash_lookup_counts.failures, self.summary.extracted_hash_lookup_counts.skipped_or_unavailable, self.summary.extraction_limit_reached, self.generated_at_unix_seconds));
+        out.push_str(&format!("- File: `{}` ({} bytes)\n- Original file SHA-256: `{}`\n- Original file lookup: {}\n- Extracted indicators: {} hashes, {} IP addresses, {} domains, {} URLs\n- Extracted hash provider outcomes: {} found, {} not found, {} failed, {} skipped or unavailable\n- Extraction limit reached: {}\n- Generated at: {} seconds since the Unix epoch (UTC)\n\nCyberFeed read the file locally as data; it did not execute or upload it.\n\n", md_code(&self.file.filename), self.file.size_bytes, md_code(&self.file.sha256), self.summary.original_file_lookup_status.as_deref().unwrap_or("not recorded"), self.summary.extracted_indicator_counts.hashes, self.summary.extracted_indicator_counts.ip_addresses, self.summary.extracted_indicator_counts.domains, self.summary.extracted_indicator_counts.urls, self.summary.extracted_hash_lookup_counts.found, self.summary.extracted_hash_lookup_counts.not_found, self.summary.extracted_hash_lookup_counts.failures, self.summary.extracted_hash_lookup_counts.skipped_or_unavailable, self.summary.extraction_limit_reached, self.generated_at_unix_seconds));
         out.push_str("## File details\n\n");
         out.push_str(&format!(
             "- Size: {} bytes\n\n## Local inspection findings\n\n",
@@ -116,6 +116,25 @@ fn render_lookup(out: &mut String, lookup: &ProviderLookup) {
                     if !finding.tags.is_empty() { out.push_str(&format!("- Tags: {}\n", finding.tags.iter().map(|tag| md_plain(tag)).collect::<Vec<_>>().join(", "))); }
                     out.push('\n');
                 }
+            }
+            LookupOutcome::UrlhausFound { details } => {
+                out.push_str(&format!("URLhaus reference: {}\nAssociated URL records: {}\n", details.reference.as_deref().map(md_plain).unwrap_or_else(|| "Not provided".into()), details.associated_url_count.map_or_else(|| "Not provided".into(), |count| count.to_string())));
+                for (label, value) in [
+                    ("Queried host", details.queried_host.as_deref()),
+                    ("Payload MD5", details.md5_hash.as_deref()),
+                    ("Payload SHA-256", details.sha256_hash.as_deref()),
+                    ("File type", details.file_type.as_deref()),
+                    ("First seen", details.first_seen.as_deref()),
+                    ("Last seen", details.last_seen.as_deref()),
+                    ("Signature", details.signature.as_deref()),
+                ] {
+                    if let Some(value) = value { out.push_str(&format!("- {label}: {}\n", md_plain(value))); }
+                }
+                for record in &details.associated_urls {
+                    out.push_str(&format!("- URL: `{}` · status: {} · reference: {}\n", md_code(&record.url), md_plain(record.status.as_deref().unwrap_or("Not provided")), md_plain(record.reference.as_deref().unwrap_or("Not provided"))));
+                    if !record.tags.is_empty() { out.push_str(&format!("  - Tags: {}\n", record.tags.iter().map(|tag| md_plain(tag)).collect::<Vec<_>>().join(", "))); }
+                }
+                out.push('\n');
             }
         }
 }

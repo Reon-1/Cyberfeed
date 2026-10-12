@@ -63,6 +63,18 @@ mod tests {
         let a = save_report(&r, &dir).unwrap();
         let b = save_report(&r, &dir).unwrap();
         assert_ne!(a, b);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&a.0).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(&a.1).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         let json: InvestigationReport = serde_json::from_slice(&fs::read(&a.0).unwrap()).unwrap();
         assert_eq!(json.schema_version, SCHEMA_VERSION);
         let markdown = fs::read_to_string(&a.1).unwrap();
@@ -175,6 +187,183 @@ mod tests {
                 .contains("Original file lookup: NOT FOUND")
         );
         assert!(report.to_markdown().contains("1 found, 0 not found"));
+    }
+
+    #[test]
+    fn summaries_count_both_providers_per_extracted_hash_and_exclude_other_indicators() {
+        let file = FileInfo {
+            name: "sample".into(),
+            size: 1,
+            sha256: "file".into(),
+        };
+        let lookup = |provider: &str, subject, queried_hash: &str, outcome| ProviderLookup {
+            provider: provider.into(),
+            subject,
+            queried_hash: queried_hash.into(),
+            retrieved_at_unix_seconds: None,
+            outcome,
+        };
+        let report = InvestigationReport::new(
+            &file,
+            vec![],
+            None,
+            vec![
+                lookup(
+                    "MalwareBazaar",
+                    LookupSubject::ExtractedIndicatorSha256,
+                    &"a".repeat(64),
+                    LookupOutcome::NotFound,
+                ),
+                lookup(
+                    "ThreatFox",
+                    LookupSubject::ExtractedIndicator,
+                    &"a".repeat(64),
+                    LookupOutcome::ThreatFoxFound { findings: vec![] },
+                ),
+                lookup(
+                    "URLhaus",
+                    LookupSubject::ExtractedIndicator,
+                    &"b".repeat(32),
+                    LookupOutcome::NotFound,
+                ),
+                lookup(
+                    "URLhaus",
+                    LookupSubject::ExtractedIndicator,
+                    &"c".repeat(40),
+                    LookupOutcome::Unsupported {
+                        explanation: "SHA-1 unsupported".into(),
+                    },
+                ),
+                lookup(
+                    "ThreatFox",
+                    LookupSubject::ExtractedIndicator,
+                    "192.0.2.1",
+                    LookupOutcome::Found(MatchDetails {
+                        matched_sha256: "x".into(),
+                        first_seen: "now".into(),
+                        file_type: "x".into(),
+                        sample_filename: None,
+                        signature: None,
+                    }),
+                ),
+                lookup(
+                    "ThreatFox",
+                    LookupSubject::ExtractedIndicator,
+                    "example.test",
+                    LookupOutcome::NotFound,
+                ),
+            ],
+        );
+        assert_eq!(
+            report.summary.extracted_hash_lookup_counts,
+            LookupCounts {
+                found: 1,
+                not_found: 2,
+                failures: 0,
+                skipped_or_unavailable: 1
+            }
+        );
+        assert!(
+            report
+                .to_markdown()
+                .contains("Extracted hash provider outcomes: 1 found, 2 not found")
+        );
+    }
+
+    #[test]
+    fn original_file_summary_prefers_positive_and_marks_disagreement_incomplete() {
+        let file = FileInfo {
+            name: "sample".into(),
+            size: 1,
+            sha256: "file".into(),
+        };
+        let lookup = |provider: &str, outcome| ProviderLookup {
+            provider: provider.into(),
+            subject: LookupSubject::OriginalFileSha256,
+            queried_hash: "file".into(),
+            retrieved_at_unix_seconds: None,
+            outcome,
+        };
+        let positive = InvestigationReport::new(
+            &file,
+            vec![],
+            None,
+            vec![
+                lookup("MalwareBazaar", LookupOutcome::NotFound),
+                lookup(
+                    "ThreatFox",
+                    LookupOutcome::ThreatFoxFound { findings: vec![] },
+                ),
+            ],
+        );
+        assert_eq!(
+            positive.summary.original_file_lookup_status.as_deref(),
+            Some("FOUND")
+        );
+        let mixed = InvestigationReport::new(
+            &file,
+            vec![],
+            None,
+            vec![
+                lookup("MalwareBazaar", LookupOutcome::NotConfigured),
+                lookup("ThreatFox", LookupOutcome::NotFound),
+            ],
+        );
+        assert_eq!(
+            mixed.summary.original_file_lookup_status.as_deref(),
+            Some("INCOMPLETE")
+        );
+        let same = InvestigationReport::new(
+            &file,
+            vec![],
+            None,
+            vec![
+                lookup("MalwareBazaar", LookupOutcome::NotConfigured),
+                lookup("ThreatFox", LookupOutcome::NotConfigured),
+            ],
+        );
+        assert_eq!(
+            same.summary.original_file_lookup_status.as_deref(),
+            Some("NOT CONFIGURED")
+        );
+        let none = InvestigationReport::new(&file, vec![], None, vec![]);
+        assert_eq!(none.summary.original_file_lookup_status, None);
+    }
+
+    #[test]
+    fn extracted_hash_counts_include_failures_and_skipped_threatfox_outcomes() {
+        let file = FileInfo {
+            name: "sample".into(),
+            size: 1,
+            sha256: "file".into(),
+        };
+        let lookups = [
+            LookupOutcome::ApiError {
+                explanation: "error".into(),
+            },
+            LookupOutcome::SkippedLookupLimit,
+            LookupOutcome::Unsupported {
+                explanation: "not supported".into(),
+            },
+        ]
+        .into_iter()
+        .map(|outcome| ProviderLookup {
+            provider: "ThreatFox".into(),
+            subject: LookupSubject::ExtractedIndicator,
+            queried_hash: "a".repeat(64),
+            retrieved_at_unix_seconds: None,
+            outcome,
+        })
+        .collect();
+        let report = InvestigationReport::new(&file, vec![], None, lookups);
+        assert_eq!(report.summary.extracted_hash_lookup_counts.failures, 1);
+        assert_eq!(
+            report
+                .summary
+                .extracted_hash_lookup_counts
+                .skipped_or_unavailable,
+            2
+        );
     }
 
     #[test]

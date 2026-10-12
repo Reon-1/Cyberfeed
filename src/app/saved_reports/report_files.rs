@@ -2,7 +2,7 @@
 use crate::report::{InvestigationReport, SCHEMA_VERSION};
 use serde_json::Value;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 pub(super) struct SavedReport {
@@ -14,6 +14,11 @@ pub(super) struct ReportCollection {
     pub(super) reports: Vec<SavedReport>,
     pub(super) unavailable: Vec<String>,
 }
+
+/// Maximum serialized saved-report size. The 10,000-indicator extraction cap
+/// keeps ordinary reports small; 32 MiB leaves ample room for provider data
+/// while bounding memory use when opening an untrusted report.
+const MAX_SAVED_REPORT_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Directory errors are separate from per-file errors so one damaged report
 /// does not prevent valid neighboring reports from loading.
@@ -62,22 +67,35 @@ pub(super) fn discover(directory: &Path) -> io::Result<ReportCollection> {
 }
 
 fn load_one(path: &Path) -> Result<InvestigationReport, String> {
-    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
+    if file.metadata().map_err(|error| error.to_string())?.len() > MAX_SAVED_REPORT_BYTES {
+        return Err("report exceeds the 32 MiB saved-report size limit".into());
+    }
+    // Read one byte past the cap so growth after metadata() is detected while
+    // allocation remains bounded.
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(MAX_SAVED_REPORT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_SAVED_REPORT_BYTES {
+        return Err("report exceeds the 32 MiB saved-report size limit".into());
+    }
     let value: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     let version = value
         .get("schema_version")
         .and_then(Value::as_u64)
         .ok_or_else(|| "missing or invalid schema_version".to_string())?;
-    if version != 1 && version != u64::from(SCHEMA_VERSION) {
+    if !(1..=u64::from(SCHEMA_VERSION)).contains(&version) {
         return Err(format!(
             "unsupported schema version {version}; this application supports {SCHEMA_VERSION}"
         ));
     }
     let mut report: InvestigationReport =
         serde_json::from_value(value).map_err(|error| error.to_string())?;
-    // Version 2 adds typed provider outcomes and subjects; version-1 fields
-    // retain their meaning, so upgrade only the in-memory snapshot on load.
-    if version == 1 {
+    // Earlier report schemas remain readable; the in-memory model uses the
+    // current version while preserving the fields those versions contained.
+    if version < u64::from(SCHEMA_VERSION) {
         report.schema_version = SCHEMA_VERSION;
     }
     Ok(report)
@@ -208,17 +226,77 @@ mod tests {
     }
 
     #[test]
-    fn version_one_reports_load_and_upgrade_in_memory() {
+    fn genuine_version_one_report_loads_and_upgrades_in_memory() {
         let directory = TestDir::new();
-        let mut old = report();
-        old.schema_version = 1;
+        // This fixture uses the v1 enums from the historical model: no generic
+        // extracted-indicator subject and no ThreatFox-specific outcomes.
+        let legacy = r#"{
+          "schema_version": 1,
+          "generated_at_unix_seconds": 77,
+          "file": {"filename":"legacy.bin","size_bytes":12,"sha256":"legacy-sha","inspected_locally_not_executed_or_uploaded":true},
+          "local_inspection": {"text_extraction":{"status":"PERFORMED","limit_reached":false},"indicators":[{"value":"legacy.test","indicator_type":"DOMAIN"}]},
+          "provider_lookups": [{"provider":"MalwareBazaar","subject":"ORIGINAL_FILE_SHA256","queried_hash":"legacy-sha","retrieved_at_unix_seconds":7,"outcome":{"status":"NOT_FOUND"}}],
+          "summary": {"original_file_lookup_status":"NOT FOUND","extracted_indicator_counts":{"hashes":0,"ip_addresses":0,"domains":1},"extracted_hash_lookup_counts":{"found":0,"not_found":0,"failures":0,"skipped_or_unavailable":0},"extraction_limit_reached":false},
+          "interpretation": ["legacy note"]
+        }"#;
+        fs::write(directory.0.join("legacy.json"), legacy).unwrap();
+        let loaded = discover(&directory.0).unwrap();
+        assert_eq!(loaded.reports.len(), 1);
+        assert_eq!(loaded.reports[0].report.schema_version, SCHEMA_VERSION);
+        assert_eq!(loaded.reports[0].report.generated_at_unix_seconds, 77);
+        assert_eq!(loaded.reports[0].report.file.sha256, "legacy-sha");
+        assert_eq!(
+            loaded.reports[0].report.local_inspection.indicators[0].value,
+            "legacy.test"
+        );
+        assert_eq!(loaded.reports[0].report.interpretation, ["legacy note"]);
+    }
+
+    #[test]
+    fn version_two_report_shape_loads_and_adds_default_url_count_in_memory() {
+        let directory = TestDir::new();
+        let mut legacy = serde_json::to_value(report()).unwrap();
+        legacy["schema_version"] = serde_json::json!(2);
+        legacy["summary"]["extracted_indicator_counts"]
+            .as_object_mut()
+            .unwrap()
+            .remove("urls");
         fs::write(
-            directory.0.join("legacy.json"),
-            serde_json::to_vec(&old).unwrap(),
+            directory.0.join("v2.json"),
+            serde_json::to_vec(&legacy).unwrap(),
         )
         .unwrap();
         let loaded = discover(&directory.0).unwrap();
         assert_eq!(loaded.reports.len(), 1);
         assert_eq!(loaded.reports[0].report.schema_version, SCHEMA_VERSION);
+        assert_eq!(loaded.reports[0].report.file.sha256, "file-sha");
+        assert_eq!(
+            loaded.reports[0]
+                .report
+                .summary
+                .extracted_indicator_counts
+                .urls,
+            0
+        );
+    }
+
+    #[test]
+    fn rejects_oversized_report_but_keeps_valid_neighbor() {
+        let directory = TestDir::new();
+        write_report(&directory.0, "valid.json", 1);
+        fs::write(
+            directory.0.join("large.json"),
+            vec![b' '; MAX_SAVED_REPORT_BYTES as usize + 1],
+        )
+        .unwrap();
+        let collection = discover(&directory.0).unwrap();
+        assert_eq!(collection.reports.len(), 1);
+        assert_eq!(collection.reports[0].report.generated_at_unix_seconds, 1);
+        assert!(
+            collection
+                .unavailable
+                .iter()
+                .any(|error| error.contains("32 MiB saved-report size limit"))
+        );
     }
 }

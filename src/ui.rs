@@ -1,5 +1,28 @@
+use crate::report::LookupOutcome;
+use crossterm::cursor;
+use crossterm::queue;
+use crossterm::terminal::{Clear, ClearType};
+use std::cell::RefCell;
 use std::fmt::Display;
 use std::io::{self, Write};
+
+#[derive(Clone, Debug)]
+enum DrawOp {
+    Open,
+    Close,
+    Divider,
+    Line(String),
+    Center(String),
+    MenuItem(String, String, String),
+    Field(String, String),
+    Status(String, String, Status),
+    IndicatorRow(usize, String, String),
+}
+
+thread_local! {
+    static SCREEN: RefCell<Vec<DrawOp>> = const { RefCell::new(Vec::new()) };
+    static SCREEN_ROWS: RefCell<usize> = const { RefCell::new(0) };
+}
 
 pub const INNER_WIDTH: usize = 112;
 const FIELD_LABEL_WIDTH: usize = 11;
@@ -21,11 +44,57 @@ const WARNING: &str = "\x1b[1;33m";
 const ERROR: &str = "\x1b[1;31m";
 const BORDER: &str = "\x1b[90m";
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Success,
+    Neutral,
     Warning,
     Error,
+}
+
+/// One shared color mapping for provider outcomes across all terminal views.
+/// A match is cautionary evidence, not a successful safety verdict.
+pub fn outcome_style(outcome: &LookupOutcome) -> Status {
+    match outcome {
+        LookupOutcome::Found(_)
+        | LookupOutcome::ThreatFoxFound { .. }
+        | LookupOutcome::UrlhausFound { .. }
+        | LookupOutcome::NotConfigured => Status::Warning,
+        LookupOutcome::Invalid { .. }
+        | LookupOutcome::ApiError { .. }
+        | LookupOutcome::RequestError { .. } => Status::Error,
+        LookupOutcome::NotFound
+        | LookupOutcome::SkippedDuplicate { .. }
+        | LookupOutcome::SkippedLookupLimit
+        | LookupOutcome::Unsupported { .. } => Status::Neutral,
+    }
+}
+
+pub fn outcome_explanation(outcome: &LookupOutcome) -> &'static str {
+    match outcome {
+        LookupOutcome::Found(_)
+        | LookupOutcome::ThreatFoxFound { .. }
+        | LookupOutcome::UrlhausFound { .. } => {
+            "A matching record was found. Review the evidence; this alone does not establish that the whole file is malicious."
+        }
+        LookupOutcome::NotFound => {
+            "No matching record was returned. This does not prove the item is safe."
+        }
+        LookupOutcome::Invalid { .. } => {
+            "This value could not be used for the check. Review its type and format."
+        }
+        LookupOutcome::ApiError { .. } | LookupOutcome::RequestError { .. } => {
+            "The check failed, so its result is unknown."
+        }
+        LookupOutcome::NotConfigured => "This source needs configuration before it can be used.",
+        LookupOutcome::SkippedDuplicate { .. } => {
+            "This duplicate check was not repeated; the earlier provider result is reused."
+        }
+        LookupOutcome::SkippedLookupLimit => {
+            "This check was not performed because the automatic request limit was reached."
+        }
+        LookupOutcome::Unsupported { .. } => "This source cannot check this type of value.",
+    }
 }
 
 pub fn header(title: &str, subtitle: &str) {
@@ -43,79 +112,274 @@ pub fn header(title: &str, subtitle: &str) {
 }
 
 pub fn open_box() {
-    let (width, margin) = frame_geometry();
-    if width == 0 {
-        return;
-    }
-    println!(
-        "{}{BORDER}╔{}╗{RESET}",
-        " ".repeat(margin),
-        "═".repeat(width)
-    );
+    draw(DrawOp::Open);
 }
 
 pub fn close_box() {
-    let (width, margin) = frame_geometry();
-    if width == 0 {
-        return;
-    }
-    println!(
-        "{}{BORDER}╚{}╝{RESET}",
-        " ".repeat(margin),
-        "═".repeat(width)
-    );
+    draw(DrawOp::Close);
 }
 
 pub fn divider() {
-    let (width, margin) = frame_geometry();
-    if width == 0 {
-        return;
-    }
-    println!(
-        "{}{BORDER}╠{}╣{RESET}",
-        " ".repeat(margin),
-        "═".repeat(width)
-    );
+    draw(DrawOp::Divider);
 }
 
 pub fn box_line(text: &str) {
-    let (width, margin) = frame_geometry();
-    for line in wrap_text(text, width.max(1)) {
-        if width == 0 {
-            println!("{line}");
-            continue;
-        }
-        let padding = width.saturating_sub(visible_width(&line));
-        println!(
-            "{}{BORDER}║{RESET}{line}{:width$}{BORDER}║{RESET}",
-            " ".repeat(margin),
-            "",
-            width = padding
-        );
-    }
+    draw(DrawOp::Line(text.to_owned()));
 }
 
 pub fn centered_box_line(text: &str) {
-    let (width, margin) = frame_geometry();
-    // Callers may include trusted ANSI styling; dynamic header values are
-    // sanitized before styling is added.
-    for line in wrap_text(text, width.max(1)) {
-        if width == 0 {
-            println!("{line}");
+    draw(DrawOp::Center(text.to_owned()));
+}
+
+fn draw(op: DrawOp) {
+    SCREEN.with(|screen| screen.borrow_mut().push(op.clone()));
+    let (columns, _) = terminal_dimensions();
+    let lines = render_op_lines(&op, columns);
+    let start_row = SCREEN_ROWS.with(|row| *row.borrow());
+    write_lines_at(&lines, start_row);
+    SCREEN_ROWS.with(|row| *row.borrow_mut() = start_row.saturating_add(lines.len()));
+}
+
+fn render_op_lines(op: &DrawOp, columns: usize) -> Vec<String> {
+    let (width, margin) = geometry_for_columns(columns.min(u16::MAX as usize) as u16);
+    match op {
+        DrawOp::Open | DrawOp::Close | DrawOp::Divider if width == 0 => Vec::new(),
+        DrawOp::Open => vec![format!(
+            "{}{BORDER}╔{}╗{RESET}",
+            " ".repeat(margin),
+            "═".repeat(width)
+        )],
+        DrawOp::Close => vec![format!(
+            "{}{BORDER}╚{}╝{RESET}",
+            " ".repeat(margin),
+            "═".repeat(width)
+        )],
+        DrawOp::Divider => vec![format!(
+            "{}{BORDER}╠{}╣{RESET}",
+            " ".repeat(margin),
+            "═".repeat(width)
+        )],
+        DrawOp::Line(text) | DrawOp::Center(text) => wrap_text(text, width.max(1))
+            .into_iter()
+            .map(|line| {
+                if width == 0 {
+                    line
+                } else if matches!(op, DrawOp::Line(_)) {
+                    let padding = width.saturating_sub(visible_width(&line));
+                    format!(
+                        "{}{BORDER}║{RESET}{line}{:width$}{BORDER}║{RESET}",
+                        " ".repeat(margin),
+                        "",
+                        width = padding
+                    )
+                } else {
+                    let padding = width.saturating_sub(visible_width(&line));
+                    let left = padding / 2;
+                    let right = padding - left;
+                    format!(
+                        "{}{BORDER}║{RESET}{}{}{}{BORDER}║{RESET}",
+                        " ".repeat(margin),
+                        " ".repeat(left),
+                        line,
+                        " ".repeat(right)
+                    )
+                }
+            })
+            .collect(),
+        DrawOp::MenuItem(number, title, description) => {
+            let indent = "      ";
+            let description_width = width.saturating_sub(indent.len()).max(1);
+            let mut content = vec![format!("  {} {BOLD}{title}{RESET}", menu_key(number))];
+            content.extend(
+                wrap_text(description, description_width)
+                    .into_iter()
+                    .map(|line| format!("{indent}{MUTED}{line}{RESET}")),
+            );
+            content
+                .iter()
+                .flat_map(|line| render_op_lines(&DrawOp::Line(line.clone()), columns))
+                .collect()
+        }
+        DrawOp::Field(label, value) => {
+            let value_width = width
+                .saturating_sub(FIELD_PREFIX_WIDTH + FIELD_LABEL_WIDTH + FIELD_SEPARATOR_WIDTH)
+                .max(1);
+            wrap_text(value, value_width)
+                .iter()
+                .enumerate()
+                .flat_map(|(index, line)| {
+                    let text = if index == 0 {
+                        format!("  {label:<FIELD_LABEL_WIDTH$} : {line}")
+                    } else {
+                        format!("  {:<FIELD_LABEL_WIDTH$}   {line}", "")
+                    };
+                    render_op_lines(&DrawOp::Line(text), columns)
+                })
+                .collect()
+        }
+        DrawOp::Status(label, value, kind) => {
+            let (symbol, color) = match kind {
+                Status::Success => ("✓", SUCCESS),
+                Status::Neutral => ("·", MUTED),
+                Status::Warning => ("!", WARNING),
+                Status::Error => ("×", ERROR),
+            };
+            let prefix =
+                format!("  {color}{symbol}{RESET} {BOLD}{label:<STATUS_LABEL_WIDTH$}{RESET} : ");
+            let value_width = width.saturating_sub(visible_width(&prefix)).max(1);
+            wrap_text(value, value_width)
+                .iter()
+                .enumerate()
+                .flat_map(|(index, line)| {
+                    let text = if index == 0 {
+                        format!("{prefix}{line}")
+                    } else {
+                        format!("{}{line}", " ".repeat(visible_width(&prefix)))
+                    };
+                    render_op_lines(&DrawOp::Line(text), columns)
+                })
+                .collect()
+        }
+        DrawOp::IndicatorRow(index, indicator_type, indicator_value) => {
+            let value_width = width.saturating_sub(INDICATOR_PREFIX_WIDTH).max(1);
+            wrap_text(indicator_value, value_width)
+                .iter()
+                .enumerate()
+                .flat_map(|(line_index, line)| {
+                    let text = if line_index == 0 {
+                        format!(
+                            "  {index:<INDICATOR_INDEX_WIDTH$} {indicator_type:<INDICATOR_TYPE_WIDTH$} {line}"
+                        )
+                    } else {
+                        format!("{}{line}", " ".repeat(INDICATOR_PREFIX_WIDTH))
+                    };
+                    render_op_lines(&DrawOp::Line(text), columns)
+                })
+                .collect()
+        }
+    }
+}
+
+pub fn reset_screen() {
+    SCREEN.with(|screen| screen.borrow_mut().clear());
+    SCREEN_ROWS.with(|row| *row.borrow_mut() = 0);
+}
+
+pub fn redraw_current_screen() {
+    let ops = SCREEN.with(|screen| screen.borrow().clone());
+    let (columns, _) = terminal_dimensions();
+    let lines = render_screen_lines(&ops, columns);
+    write_lines_at(&lines, 0);
+    SCREEN_ROWS.with(|row| *row.borrow_mut() = lines.len());
+}
+
+/// Redraw a screen while keeping one terminal row available for its prompt.
+pub fn redraw_current_screen_with_prompt() {
+    let ops = SCREEN.with(|screen| screen.borrow().clone());
+    let (columns, rows) = terminal_dimensions();
+    let lines = render_screen_lines_for_rows(&ops, columns, rows.saturating_sub(1));
+    write_lines_at(&lines, 0);
+    SCREEN_ROWS.with(|row| *row.borrow_mut() = lines.len());
+}
+
+fn render_screen_lines(ops: &[DrawOp], columns: usize) -> Vec<String> {
+    ops.iter()
+        .flat_map(|operation| render_op_lines(operation, columns))
+        .collect()
+}
+
+fn render_screen_lines_for_rows(ops: &[DrawOp], columns: usize, max_rows: usize) -> Vec<String> {
+    let mut lines = ops
+        .iter()
+        .flat_map(|operation| {
+            let is_blank = matches!(operation, DrawOp::Line(text) if text.trim().is_empty());
+            let is_close = matches!(operation, DrawOp::Close);
+            render_op_lines(operation, columns)
+                .into_iter()
+                .map(move |line| (line, is_blank, is_close))
+        })
+        .collect::<Vec<_>>();
+
+    while lines.len() > max_rows {
+        if let Some(blank) = lines.iter().position(|(_, is_blank, _)| *is_blank) {
+            lines.remove(blank);
             continue;
         }
-        let padding = width.saturating_sub(visible_width(&line));
-        let left_padding = padding / 2;
-        let right_padding = padding - left_padding;
 
-        println!(
-            "{}{BORDER}║{RESET}{}{}{}{BORDER}║{RESET}",
-            " ".repeat(margin),
-            " ".repeat(left_padding),
-            line,
-            " ".repeat(right_padding)
-        );
+        if max_rows == 0 {
+            lines.clear();
+        } else if let Some(close_index) = lines.iter().rposition(|(_, _, is_close)| *is_close) {
+            let close = lines.remove(close_index);
+            lines.truncate(max_rows.saturating_sub(1));
+            lines.push(close);
+        } else {
+            lines.truncate(max_rows);
+        }
     }
+    lines.into_iter().map(|(line, _, _)| line).collect()
+}
+
+fn write_lines_at(lines: &[String], start_row: usize) {
+    let mut stdout = io::stdout();
+    let (_, terminal_rows) = terminal_dimensions();
+    let _ = write_lines_to(&mut stdout, lines, start_row, terminal_rows);
+    let _ = stdout.flush();
+}
+
+fn write_lines_to<W: Write>(
+    writer: &mut W,
+    lines: &[String],
+    start_row: usize,
+    terminal_rows: usize,
+) -> io::Result<()> {
+    for (offset, line) in lines.iter().enumerate() {
+        let row = start_row.saturating_add(offset);
+        if row >= terminal_rows {
+            continue;
+        }
+        let row = row.min(u16::MAX as usize) as u16;
+        queue!(
+            writer,
+            cursor::MoveTo(0, row),
+            Clear(ClearType::CurrentLine)
+        )?;
+        write!(writer, "{line}")?;
+    }
+    Ok(())
+}
+
+/// Number of terminal rows occupied by the current screen operations.
+pub fn rendered_rows() -> usize {
+    SCREEN_ROWS.with(|row| *row.borrow())
+}
+
+pub(crate) fn set_rendered_rows(rows: usize) {
+    SCREEN_ROWS.with(|current| *current.borrow_mut() = rows);
+}
+
+pub fn terminal_too_small((columns, rows): (usize, usize)) -> bool {
+    columns < 20 || rows < 6
+}
+
+#[cfg(test)]
+pub(crate) fn recorded_line_texts() -> Vec<String> {
+    SCREEN.with(|screen| {
+        screen
+            .borrow()
+            .iter()
+            .filter_map(|op| match op {
+                DrawOp::Line(text) | DrawOp::Center(text) => Some(text.clone()),
+                DrawOp::Open | DrawOp::Close | DrawOp::Divider => None,
+                DrawOp::MenuItem(number, title, description) => {
+                    Some(format!("[{number}] {title} {description}"))
+                }
+                DrawOp::Field(label, value) | DrawOp::Status(label, value, _) => {
+                    Some(format!("{label}: {value}"))
+                }
+                DrawOp::IndicatorRow(index, kind, value) => Some(format!("{index} {kind} {value}")),
+            })
+            .collect()
+    })
 }
 
 pub fn section(title: &str) {
@@ -126,14 +390,11 @@ pub fn section(title: &str) {
 }
 
 pub fn menu_item(number: &str, title: &str, description: &str) {
-    let title = sanitize_terminal_text(title);
-    let description = sanitize_terminal_text(description);
-    box_line(&format!("  {} {BOLD}{title}{RESET}", menu_key(number)));
-    let indent = "      ";
-    let description_width = content_width().saturating_sub(indent.len()).max(1);
-    for line in wrap_text(&description, description_width) {
-        box_line(&format!("{indent}{MUTED}{line}{RESET}"));
-    }
+    draw(DrawOp::MenuItem(
+        sanitize_terminal_text(number),
+        sanitize_terminal_text(title),
+        sanitize_terminal_text(description),
+    ));
 }
 
 fn menu_key(number: &str) -> String {
@@ -161,20 +422,10 @@ pub fn country_flag(code: &str) -> String {
 }
 
 pub fn field(label: &str, value: impl Display) {
-    let label = sanitize_terminal_text(label);
-    let value = sanitize_terminal_text(&value.to_string());
-    let value_width = content_width()
-        .saturating_sub(FIELD_PREFIX_WIDTH + FIELD_LABEL_WIDTH + FIELD_SEPARATOR_WIDTH)
-        .max(1);
-    let lines = wrap_text(&value, value_width);
-
-    for (index, line) in lines.iter().enumerate() {
-        if index == 0 {
-            box_line(&format!("  {label:<FIELD_LABEL_WIDTH$} : {line}"));
-        } else {
-            box_line(&format!("  {:<FIELD_LABEL_WIDTH$}   {line}", ""));
-        }
-    }
+    draw(DrawOp::Field(
+        sanitize_terminal_text(label),
+        sanitize_terminal_text(&value.to_string()),
+    ));
 }
 
 pub fn indicator_header() {
@@ -185,22 +436,11 @@ pub fn indicator_header() {
 }
 
 pub fn indicator_row(index: usize, indicator_type: &str, indicator_value: &str) {
-    let indicator_type = sanitize_terminal_text(indicator_type);
-    let indicator_value = sanitize_terminal_text(indicator_value);
-    let value_width = content_width()
-        .saturating_sub(INDICATOR_PREFIX_WIDTH)
-        .max(1);
-    let lines = wrap_text(&indicator_value, value_width);
-
-    for (line_index, line) in lines.iter().enumerate() {
-        if line_index == 0 {
-            box_line(&format!(
-                "  {index:<INDICATOR_INDEX_WIDTH$} {indicator_type:<INDICATOR_TYPE_WIDTH$} {line}"
-            ));
-        } else {
-            box_line(&format!("{}{line}", " ".repeat(INDICATOR_PREFIX_WIDTH)));
-        }
-    }
+    draw(DrawOp::IndicatorRow(
+        index,
+        sanitize_terminal_text(indicator_type),
+        sanitize_terminal_text(indicator_value),
+    ));
 }
 
 pub fn indicator_details(indicator_type: &str, indicator_value: &str) {
@@ -226,30 +466,24 @@ pub fn align_prompt(prompt: &str) -> String {
     }
 }
 
-pub fn horizontal_margin() -> String {
-    " ".repeat(frame_geometry().1)
+pub fn status(label: &str, value: &str, kind: Status) {
+    draw(DrawOp::Status(
+        sanitize_terminal_text(label),
+        sanitize_terminal_text(value),
+        kind,
+    ));
 }
 
-pub fn status(label: &str, value: &str, kind: Status) {
-    let label = sanitize_terminal_text(label);
+/// Apply the same semantic colors as full status rows to compact table cells.
+pub fn styled_status(value: &str, kind: Status) -> String {
     let value = sanitize_terminal_text(value);
-    let (symbol, color) = match kind {
-        Status::Success => ("✓", SUCCESS),
-        Status::Warning => ("!", WARNING),
-        Status::Error => ("×", ERROR),
+    let color = match kind {
+        Status::Success => SUCCESS,
+        Status::Neutral => MUTED,
+        Status::Warning => WARNING,
+        Status::Error => ERROR,
     };
-
-    let prefix = format!("  {color}{symbol}{RESET} {BOLD}{label:<STATUS_LABEL_WIDTH$}{RESET} : ");
-    let value_width = content_width()
-        .saturating_sub(visible_width(&prefix))
-        .max(1);
-    for (index, line) in wrap_text(&value, value_width).iter().enumerate() {
-        if index == 0 {
-            box_line(&format!("{prefix}{line}"));
-        } else {
-            box_line(&format!("{}{line}", " ".repeat(visible_width(&prefix))));
-        }
-    }
+    format!("{color}{value}{RESET}")
 }
 
 pub fn warning(message: &str) {
@@ -271,6 +505,7 @@ pub fn progress_line(message: &str, kind: Status) {
     let safe = sanitize_terminal_text(message);
     let (symbol, color) = match kind {
         Status::Success => ("✓", SUCCESS),
+        Status::Neutral => ("·", MUTED),
         Status::Warning => ("·", WARNING),
         Status::Error => ("×", ERROR),
     };
@@ -438,7 +673,7 @@ pub(crate) fn visible_width(text: &str) -> usize {
     width
 }
 
-fn display_width(character: char) -> usize {
+pub fn display_width(character: char) -> usize {
     let code = character as u32;
     if matches!(
         code,

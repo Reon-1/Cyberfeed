@@ -1,5 +1,5 @@
 //! Pure comparison of the structured findings stored in two reports.
-use crate::indicator::Indicator;
+use crate::indicator::{Indicator, IndicatorType, classify};
 use crate::report::{InvestigationReport, LookupOutcome, ProviderLookup, TextExtraction};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,6 +12,9 @@ pub(super) struct ReportComparison {
     pub(super) unchanged_provider_results: usize,
     pub(super) unavailable_provider_results: Vec<String>,
     pub(super) metadata_changes: Vec<String>,
+    pub(super) indicator_absence_inconclusive: bool,
+    pub(super) interpretations: Vec<String>,
+    pub(super) worth_checking: Vec<String>,
 }
 
 /// A SHA-256 mismatch blocks result comparison because the reports describe
@@ -30,6 +33,9 @@ pub(super) fn compare(
         unchanged_provider_results: 0,
         unavailable_provider_results: Vec::new(),
         metadata_changes: Vec::new(),
+        indicator_absence_inconclusive: false,
+        interpretations: Vec::new(),
+        worth_checking: Vec::new(),
     };
     if !same_subject {
         return result;
@@ -116,13 +122,25 @@ fn compare_indicators(
     newer: &InvestigationReport,
     result: &mut ReportComparison,
 ) {
+    let full_extraction = |report: &InvestigationReport| {
+        matches!(
+            report.local_inspection.text_extraction,
+            TextExtraction::Performed {
+                limit_reached: false
+            }
+        )
+    };
+    result.indicator_absence_inconclusive = !(full_extraction(older) && full_extraction(newer));
     let old: BTreeMap<_, _> = older
         .local_inspection
         .indicators
         .iter()
         .map(|indicator| {
             (
-                (indicator.indicator_type, indicator.value.to_lowercase()),
+                (
+                    indicator.indicator_type,
+                    indicator_key(indicator.indicator_type, &indicator.value),
+                ),
                 indicator,
             )
         })
@@ -133,22 +151,35 @@ fn compare_indicators(
         .iter()
         .map(|indicator| {
             (
-                (indicator.indicator_type, indicator.value.to_lowercase()),
+                (
+                    indicator.indicator_type,
+                    indicator_key(indicator.indicator_type, &indicator.value),
+                ),
                 indicator,
             )
         })
         .collect();
     result.unchanged_indicators = old.keys().filter(|key| new.contains_key(*key)).count();
-    result.removed_indicators = old
-        .iter()
-        .filter(|(key, _)| !new.contains_key(*key))
-        .map(|(_, value)| (*value).clone())
-        .collect();
+    if !result.indicator_absence_inconclusive {
+        result.removed_indicators = old
+            .iter()
+            .filter(|(key, _)| !new.contains_key(*key))
+            .map(|(_, value)| (*value).clone())
+            .collect();
+    }
     result.added_indicators = new
         .iter()
         .filter(|(key, _)| !old.contains_key(*key))
         .map(|(_, value)| (*value).clone())
         .collect();
+}
+
+fn indicator_key(indicator_type: IndicatorType, value: &str) -> String {
+    if indicator_type == IndicatorType::Url {
+        value.to_owned()
+    } else {
+        value.to_ascii_lowercase()
+    }
 }
 
 fn compare_provider_results(
@@ -160,7 +191,7 @@ fn compare_provider_results(
     let new = lookup_map(&newer.provider_lookups);
     let keys: BTreeSet<_> = old.keys().chain(new.keys()).cloned().collect();
     for key in keys {
-        let label = format!("{} {} {}", key.0, key.1, key.2);
+        let label = format!("{} {} {} {}", key.0, key.1, key.2, key.3);
         let old_result = old.get(&key).copied();
         let new_result = new.get(&key).copied();
         match (old_result, new_result) {
@@ -173,16 +204,32 @@ fn compare_provider_results(
                         outcome_description(&before.outcome),
                         outcome_description(&after.outcome)
                     ));
+                    result
+                        .interpretations
+                        .push(change_interpretation(&before.outcome, &after.outcome));
+                    result.worth_checking.push(label.clone());
                 }
             }
-            (Some(before), None) => result.provider_changes.push(format!(
-                "{label}: {} → no lookup recorded",
-                outcome_description(&before.outcome)
-            )),
-            (None, Some(after)) => result.provider_changes.push(format!(
-                "{label}: no lookup recorded → {}",
-                outcome_description(&after.outcome)
-            )),
+            (Some(before), None) => {
+                result.provider_changes.push(format!(
+                    "{label}: {} → no lookup recorded",
+                    outcome_description(&before.outcome)
+                ));
+                result.interpretations.push(format!(
+                    "Coverage differs for {label}; no newer lookup was recorded, so this is not a negative result."
+                ));
+                result.worth_checking.push(label.clone());
+            }
+            (None, Some(after)) => {
+                result.provider_changes.push(format!(
+                    "{label}: no lookup recorded → {}",
+                    outcome_description(&after.outcome)
+                ));
+                result.interpretations.push(format!(
+                    "Coverage differs for {label}; the earlier report contains no result to compare."
+                ));
+                result.worth_checking.push(label.clone());
+            }
             (None, None) => {}
         }
         for lookup in [old_result, new_result].into_iter().flatten() {
@@ -198,6 +245,28 @@ fn compare_provider_results(
     }
 }
 
+fn change_interpretation(before: &LookupOutcome, after: &LookupOutcome) -> String {
+    if outcome_is_unavailable(before) || outcome_is_unavailable(after) {
+        return "At least one check was unavailable, skipped, unsupported, or failed; the change is inconclusive.".into();
+    }
+    if is_positive(after) && !is_positive(before) {
+        return "A matching record is present in the newer report. This is newly recorded evidence; it does not show when the threat appeared.".into();
+    }
+    if is_positive(before) && matches!(after, LookupOutcome::NotFound) {
+        return "The newer check returned no match. The earlier record remains historical evidence; this does not prove the threat disappeared or the item is safe.".into();
+    }
+    "Provider evidence or metadata changed; inspect the technical details to see which fields differ.".into()
+}
+
+fn is_positive(outcome: &LookupOutcome) -> bool {
+    matches!(
+        outcome,
+        LookupOutcome::Found(_)
+            | LookupOutcome::ThreatFoxFound { .. }
+            | LookupOutcome::UrlhausFound { .. }
+    )
+}
+
 fn outcomes_equivalent(older: &LookupOutcome, newer: &LookupOutcome) -> bool {
     match (older, newer) {
         (
@@ -210,11 +279,23 @@ fn outcomes_equivalent(older: &LookupOutcome, newer: &LookupOutcome) -> bool {
             newer.sort();
             older == newer
         }
+        (
+            LookupOutcome::UrlhausFound { details: older },
+            LookupOutcome::UrlhausFound { details: newer },
+        ) => {
+            let mut older = older.clone();
+            let mut newer = newer.clone();
+            older.associated_urls.sort();
+            newer.associated_urls.sort();
+            older == newer
+        }
         _ => older == newer,
     }
 }
 
-fn lookup_map(lookups: &[ProviderLookup]) -> BTreeMap<(String, String, String), &ProviderLookup> {
+fn lookup_map(
+    lookups: &[ProviderLookup],
+) -> BTreeMap<(String, String, String, String), &ProviderLookup> {
     lookups
         .iter()
         .map(|lookup| {
@@ -222,12 +303,25 @@ fn lookup_map(lookups: &[ProviderLookup]) -> BTreeMap<(String, String, String), 
                 (
                     lookup.provider.clone(),
                     format!("{:?}", lookup.subject),
-                    lookup.queried_hash.to_lowercase(),
+                    format!("{:?}", lookup_indicator_type(lookup)),
+                    indicator_key(lookup_indicator_type(lookup), &lookup.queried_hash),
                 ),
                 lookup,
             )
         })
         .collect()
+}
+
+fn lookup_indicator_type(lookup: &ProviderLookup) -> IndicatorType {
+    if lookup.subject == crate::report::LookupSubject::OriginalFileSha256 {
+        IndicatorType::Hash
+    } else {
+        classify(
+            &lookup.queried_hash,
+            crate::indicator::EXTRACTED_HASH_LENGTHS,
+        )
+        .unwrap_or(IndicatorType::Domain)
+    }
 }
 
 fn outcome_is_unavailable(outcome: &LookupOutcome) -> bool {
@@ -273,6 +367,13 @@ fn outcome_description(outcome: &LookupOutcome) -> String {
                 .join("; ");
             format!("THREATFOX FOUND ({details})")
         }
+        LookupOutcome::UrlhausFound { details } => format!(
+            "URLHAUS FOUND: {} associated URL(s), reference {}",
+            details
+                .associated_url_count
+                .map_or_else(|| "unknown".into(), |count| count.to_string()),
+            details.reference.as_deref().unwrap_or("not provided")
+        ),
     }
 }
 
@@ -323,7 +424,7 @@ mod tests {
         InvestigationReport::new(
             &file,
             vec![Indicator::new("example.test", IndicatorType::Domain)],
-            Some(true),
+            Some(false),
             vec![ProviderLookup {
                 provider: "ExampleProvider".into(),
                 subject: LookupSubject::OriginalFileSha256,
@@ -369,6 +470,55 @@ mod tests {
         assert_eq!(comparison.unchanged_indicators, 1);
         assert_eq!(comparison.added_indicators[0].value, "new.test");
         assert_eq!(comparison.removed_indicators[0].value, "old.test");
+    }
+
+    #[test]
+    fn url_paths_keep_case_when_comparing_extracted_indicators() {
+        let mut older = report();
+        older.local_inspection.indicators =
+            vec![Indicator::new("https://example.test/A", IndicatorType::Url)];
+        let mut newer = report();
+        newer.local_inspection.indicators =
+            vec![Indicator::new("https://example.test/a", IndicatorType::Url)];
+        let comparison = compare(&older, &newer);
+        assert_eq!(
+            comparison.added_indicators[0].value,
+            "https://example.test/a"
+        );
+        assert_eq!(
+            comparison.removed_indicators[0].value,
+            "https://example.test/A"
+        );
+    }
+
+    #[test]
+    fn incomplete_extraction_does_not_claim_an_indicator_was_removed() {
+        let mut older = report();
+        older
+            .local_inspection
+            .indicators
+            .push(Indicator::new("old.example.test", IndicatorType::Domain));
+        let mut newer = report();
+        newer.local_inspection.text_extraction = TextExtraction::SkippedBinaryOrNonText;
+        let comparison = compare(&older, &newer);
+        assert!(comparison.removed_indicators.is_empty());
+        assert!(comparison.indicator_absence_inconclusive);
+    }
+
+    #[test]
+    fn newly_recorded_matches_and_provider_errors_are_interpreted_cautiously() {
+        let mut older = report();
+        let mut newer = report();
+        older.provider_lookups[0].outcome = LookupOutcome::NotFound;
+        newer.provider_lookups[0].outcome = found();
+        let comparison = compare(&older, &newer);
+        assert!(comparison.interpretations[0].contains("newly recorded evidence"));
+
+        older.provider_lookups[0].outcome = LookupOutcome::RequestError {
+            explanation: "offline".into(),
+        };
+        let comparison = compare(&older, &newer);
+        assert!(comparison.interpretations[0].contains("inconclusive"));
     }
 
     #[test]

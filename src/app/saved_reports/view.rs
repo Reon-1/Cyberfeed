@@ -91,84 +91,128 @@ pub(super) fn comparison_screen(older: &InvestigationReport, newer: &Investigati
         "REPORT COMPARISON",
         "Recorded results · offline · read-only",
     );
-    report_details_section("OLDER REPORT", older);
-    report_details_section("NEWER REPORT", newer);
+    ui::section("COMPARISON SUMMARY");
+    ui::field("Older report", terminal_safe(&older.file.filename));
+    ui::field(
+        "Older saved",
+        format_timestamp(older.generated_at_unix_seconds),
+    );
+    ui::field("Newer report", terminal_safe(&newer.file.filename));
+    ui::field(
+        "Newer saved",
+        format_timestamp(newer.generated_at_unix_seconds),
+    );
+    hash_field("Older SHA-256", &older.file.sha256);
+    hash_field("Newer SHA-256", &newer.file.sha256);
     if !comparison.same_subject {
         ui::status(
-            "RESULT",
-            "DIFFERENT SUBJECTS — FINDINGS NOT COMPARED",
-            ui::Status::Warning,
+            "File identity",
+            "Different file contents — findings not compared",
+            ui::Status::Neutral,
         );
-        ui::section("WHY NO COMPARISON?");
+        ui::section("WHAT IT MEANS");
         comparison_line(
-            "The file SHA-256 values differ, so these reports describe different file subjects. A historical findings comparison would be unreliable.",
+            "The SHA-256 hashes differ, so these reports describe different file contents. The timestamps do not establish that one is a later version of the other.",
         );
     } else {
+        ui::status(
+            "File identity",
+            "Same SHA-256 — recorded evidence can be compared",
+            ui::Status::Neutral,
+        );
         render_same_subject_comparison(&comparison);
     }
+    technical_details_section("OLDER REPORT EVIDENCE", older);
+    technical_details_section("NEWER REPORT EVIDENCE", newer);
     ui::navigation_footer("Enter", "Return to Saved Reports");
     ui::close_box();
 }
 
 fn render_same_subject_comparison(comparison: &ReportComparison) {
-    ui::status(
-        "RESULT",
-        "SAME FILE SUBJECT — RECORDED RESULTS COMPARED",
-        ui::Status::Success,
-    );
-    ui::section("INVESTIGATION METADATA");
-    if comparison.metadata_changes.is_empty() {
-        ui::box_line("No recorded metadata differences.");
-    }
-    for change in &comparison.metadata_changes {
-        comparison_line(&format!("• {change}"));
-    }
-
-    ui::section("INDICATOR CHANGES");
-    comparison_line(&format!("Added: {}", comparison.added_indicators.len()));
-    comparison_line(&format!("Removed: {}", comparison.removed_indicators.len()));
-    comparison_line(&format!("Unchanged: {}", comparison.unchanged_indicators));
-    if comparison.added_indicators.is_empty() && comparison.removed_indicators.is_empty() {
-        ui::box_line("No indicator additions or removals.");
+    ui::section("WHAT CHANGED");
+    comparison_line(&format!(
+        "Indicators first recorded in newer report: {}",
+        comparison.added_indicators.len()
+    ));
+    comparison_line(&format!(
+        "Indicators absent from a complete newer scan: {}",
+        comparison.removed_indicators.len()
+    ));
+    comparison_line(&format!(
+        "Indicators present in both reports: {}",
+        comparison.unchanged_indicators
+    ));
+    if comparison.indicator_absence_inconclusive {
+        ui::box_line(
+            "At least one extraction was skipped or incomplete; absence cannot be interpreted as removal.",
+        );
     }
     for indicator in &comparison.added_indicators {
         comparison_line(&format!(
-            "Added in newer report: {} {}",
+            "First recorded in newer report: {} {}",
             indicator.indicator_type.as_str(),
             indicator.value
         ));
     }
     for indicator in &comparison.removed_indicators {
         comparison_line(&format!(
-            "Absent from newer report: {} {}",
+            "Not found in the newer complete extraction: {} {}",
             indicator.indicator_type.as_str(),
             indicator.value
         ));
     }
 
-    ui::section("PROVIDER RESULTS");
-    comparison_line(&format!("Changed: {}", comparison.provider_changes.len()));
     comparison_line(&format!(
-        "Unchanged: {}",
+        "Provider observations changed: {}",
+        comparison.provider_changes.len()
+    ));
+    for change in &comparison.provider_changes {
+        comparison_line(change);
+    }
+
+    ui::section("WHAT IT MEANS");
+    if comparison.provider_changes.is_empty()
+        && comparison.metadata_changes.is_empty()
+        && comparison.added_indicators.is_empty()
+        && comparison.removed_indicators.is_empty()
+    {
+        ui::box_line(
+            "No meaningful differences were detected in the saved evidence. This does not establish that the file is safe.",
+        );
+    }
+    if comparison.interpretations.is_empty() && !comparison.indicator_absence_inconclusive {
+        ui::box_line("No changed provider results need interpretation.");
+    }
+    for meaning in &comparison.interpretations {
+        comparison_line(meaning);
+    }
+    for change in &comparison.metadata_changes {
+        comparison_line(change);
+    }
+
+    ui::section("WORTH CHECKING");
+    if comparison.worth_checking.is_empty() && comparison.added_indicators.is_empty() {
+        ui::box_line("No specific changed indicator or provider result was identified.");
+    }
+    for item in comparison.worth_checking.iter().take(12) {
+        comparison_line(item);
+    }
+    for indicator in comparison.added_indicators.iter().take(12) {
+        comparison_line(&format!(
+            "{} {}",
+            indicator.indicator_type.as_str(),
+            indicator.value
+        ));
+    }
+    ui::section("PROVIDER OUTCOME COUNTS");
+    comparison_line(&format!(
+        "Unchanged observations: {}",
         comparison.unchanged_provider_results
     ));
     comparison_line(&format!(
-        "Unavailable/error/skipped: {}",
+        "Unavailable/error/skipped observations: {}",
         comparison.unavailable_provider_results.len()
     ));
-    for change in &comparison.provider_changes {
-        comparison_line(&format!("Changed outcome: {change}"));
-    }
-    for unavailable in &comparison.unavailable_provider_results {
-        comparison_line(&format!("Unavailable or skipped: {unavailable}"));
-    }
-    if comparison.provider_changes.is_empty() && comparison.unavailable_provider_results.is_empty()
-    {
-        ui::box_line("No provider result differences or unavailable outcomes.");
-    }
-    comparison_line(
-        "These are saved outcome changes only. NOT FOUND is not proof of safety; an error followed by success does not establish that a threat appeared.",
-    );
 }
 
 fn report_details_section(title: &str, report: &InvestigationReport) {
@@ -179,6 +223,26 @@ fn report_details_section(title: &str, report: &InvestigationReport) {
         format_timestamp(report.generated_at_unix_seconds),
     );
     hash_field("SHA-256", &report.file.sha256);
+}
+
+fn technical_details_section(title: &str, report: &InvestigationReport) {
+    report_details_section(title, report);
+    for lookup in &report.provider_lookups {
+        comparison_line(&format!(
+            "{} · {:?} · {}",
+            terminal_safe(&lookup.provider),
+            lookup.subject,
+            terminal_safe(lookup.outcome.status())
+        ));
+        super::super::provider_views::display_lookup_details(
+            &lookup.provider,
+            &lookup.queried_hash,
+            &lookup.outcome,
+        );
+        if let Some(timestamp) = lookup.retrieved_at_unix_seconds {
+            comparison_line(&format!("Checked: {}", format_timestamp(timestamp)));
+        }
+    }
 }
 
 fn hash_field(label: &str, hash: &str) {

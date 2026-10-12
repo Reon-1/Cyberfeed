@@ -2,6 +2,8 @@
 use super::model::InvestigationReport;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -137,7 +139,13 @@ fn create_temp_file(
             ".{base}-{}-{id}.{extension}.tmp",
             std::process::id()
         ));
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        // Reports contain hashes and extracted indicators. Keep them private
+        // to the creating user on Unix instead of inheriting a readable mode.
+        #[cfg(unix)]
+        options.mode(0o600);
+        match options.open(&path) {
             Ok(file) => return Ok((path, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),

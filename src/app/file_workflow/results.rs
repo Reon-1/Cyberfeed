@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 
 const MALWAREBAZAAR: &str = "MalwareBazaar";
 const THREATFOX: &str = "ThreatFox";
+const URLHAUS: &str = "URLhaus";
+const TABLE_PROVIDER_WIDTH: usize = 16;
 
 pub(super) struct LiveProgress {
     total: usize,
@@ -99,6 +101,8 @@ struct PageView {
     end: usize,
     page: usize,
     pages: usize,
+    compact: bool,
+    table: bool,
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -108,22 +112,24 @@ struct OutcomeCounts {
     errors: usize,
     unsupported: usize,
     unconfigured: usize,
-    skipped: usize,
+    skipped_duplicate: usize,
+    skipped_limit: usize,
 }
 
 impl OutcomeCounts {
     fn record(&mut self, outcome: &LookupOutcome) {
         match outcome {
-            LookupOutcome::Found(_) | LookupOutcome::ThreatFoxFound { .. } => self.found += 1,
+            LookupOutcome::Found(_)
+            | LookupOutcome::ThreatFoxFound { .. }
+            | LookupOutcome::UrlhausFound { .. } => self.found += 1,
             LookupOutcome::NotFound => self.not_found += 1,
             LookupOutcome::Invalid { .. }
             | LookupOutcome::ApiError { .. }
             | LookupOutcome::RequestError { .. } => self.errors += 1,
             LookupOutcome::Unsupported { .. } => self.unsupported += 1,
             LookupOutcome::NotConfigured => self.unconfigured += 1,
-            LookupOutcome::SkippedDuplicate { .. } | LookupOutcome::SkippedLookupLimit => {
-                self.skipped += 1;
-            }
+            LookupOutcome::SkippedDuplicate { .. } => self.skipped_duplicate += 1,
+            LookupOutcome::SkippedLookupLimit => self.skipped_limit += 1,
         }
     }
 
@@ -134,7 +140,8 @@ impl OutcomeCounts {
             ("ERROR", self.errors),
             ("UNSUPPORTED", self.unsupported),
             ("NOT CONFIGURED", self.unconfigured),
-            ("SKIPPED", self.skipped),
+            ("SKIPPED DUPLICATE", self.skipped_duplicate),
+            ("SKIPPED LIMIT", self.skipped_limit),
         ]
         .into_iter()
         .filter(|(_, count)| *count > 0)
@@ -158,7 +165,13 @@ fn indicator_entries<'a>(
                     .iter()
                     .filter(|lookup| {
                         lookup.subject != LookupSubject::OriginalFileSha256
-                            && lookup.queried_hash == indicator.value
+                            && (lookup.queried_hash == indicator.value
+                                || (indicator.indicator_type == IndicatorType::Url
+                                    && super::lookups::host_from_url(&indicator.value)
+                                        .is_some_and(|(host, _)| {
+                                            lookup.provider == "URLhaus"
+                                                && lookup.queried_hash == host
+                                        })))
                     })
                     .collect(),
             }
@@ -176,11 +189,19 @@ pub(super) fn review(
 ) {
     let entries = indicator_entries(extraction, lookups);
     let mut page = 0usize;
+    let mut previous_capacity = None;
     loop {
         terminal::clear_screen();
         let dimensions = ui::terminal_dimensions();
-        let small_terminal = dimensions.1 < 36;
-        let capacity = page_capacity(entries.len(), dimensions);
+        let layout = overview_layout(entries.len(), dimensions);
+        let capacity = layout.capacity;
+        if let Some(old_capacity) = previous_capacity
+            && old_capacity != capacity
+        {
+            let current_indicator = page.saturating_mul(old_capacity);
+            page = page_for_indicator(current_indicator, capacity);
+        }
+        previous_capacity = Some(capacity);
         let pages = page_count(entries.len(), capacity);
         page = page.min(pages.saturating_sub(1));
         let first = page * capacity;
@@ -195,24 +216,22 @@ pub(super) fn review(
                 end,
                 page,
                 pages,
+                compact: layout.compact,
+                table: layout.table,
             },
         );
-        if !small_terminal && pages > 1 {
-            ui::navigation_footer("N / P", "Next / previous page");
-        }
-        if !small_terminal {
-            ui::navigation_footer("number", "Open indicator details");
-            ui::navigation_footer("F", "Original file hash evidence");
-        }
-        ui::navigation_footer("0", "Continue to report saving");
+        let navigation = if pages > 1 {
+            "N/P page · number details · F file hash · 0 continue"
+        } else {
+            "number details · F file hash · 0 continue"
+        };
+        ui::box_line("");
+        ui::divider();
+        ui::box_line(&format!("  {navigation}"));
         ui::close_box();
 
         let input = terminal::read_input(editor, "  Selection: ", false);
-        let selection = if small_terminal && input != "0" {
-            Selection::Invalid
-        } else {
-            parse_selection(&input, first, end)
-        };
+        let selection = parse_selection(&input, first, end);
         match selection {
             Selection::Continue => return,
             Selection::Next => page = (page + 1).min(pages.saturating_sub(1)),
@@ -244,13 +263,8 @@ fn render_overview(
     entries: &[IndicatorEntry<'_>],
     view: PageView,
 ) {
-    if ui::terminal_dimensions().1 < 36 {
-        ui::header("FILE INVESTIGATION", "Terminal size limits the overview");
-        ui::section("FILE SUMMARY");
-        ui::field("Filename", &file.name);
-        ui::field("Size", format_size(file.size));
-        ui::field("SHA-256", overview_value(&file.sha256, IndicatorType::Hash));
-        ui::warning("Resize the terminal to review provider summaries and indicators.");
+    if view.compact {
+        render_compact_overview(file, extraction, entries, view);
         return;
     }
     let PageView {
@@ -258,28 +272,33 @@ fn render_overview(
         end,
         page,
         pages,
+        ..
     } = view;
-    ui::header("FILE INVESTIGATION", "Completed findings · offline review");
+    ui::header(
+        "FILE INVESTIGATION",
+        "Completed investigation · review results",
+    );
     ui::section("FILE SUMMARY");
     ui::field("Filename", &file.name);
     ui::field("Size", format_size(file.size));
     ui::field("SHA-256", overview_value(&file.sha256, IndicatorType::Hash));
     let counts = extraction.map(|data| {
-        let mut counts = [0usize; 3];
+        let mut counts = [0usize; 4];
         for indicator in &data.indicators {
             counts[type_index(indicator.indicator_type)] += 1;
         }
         counts
     });
     match counts {
-        Some([hashes, ips, domains]) => ui::field(
+        Some([hashes, ips, domains, urls]) => ui::field(
             "Extracted",
             format!(
-                "{} indicators ({} hashes, {} IPs, {} domains)",
-                hashes + ips + domains,
+                "{} indicators ({} hashes, {} IPs, {} domains, {} URLs)",
+                hashes + ips + domains + urls,
                 hashes,
                 ips,
-                domains
+                domains,
+                urls
             ),
         ),
         None => ui::field("Extracted", "Skipped (binary or non-text content)"),
@@ -287,13 +306,19 @@ fn render_overview(
     ui::field(
         "Matches",
         format!(
-            "{} extracted indicators with a provider record",
+            "{} distinct indicators with a positive provider match",
             matched_indicator_count(entries)
         ),
     );
+    ui::box_line(
+        "  A provider match is evidence about that indicator, not a verdict on the whole file.",
+    );
 
-    ui::section("EXTRACTED INDICATOR PROVIDER SUMMARY");
-    for provider in [MALWAREBAZAAR, THREATFOX] {
+    ui::section("PROVIDER LOOKUP OUTCOMES");
+    ui::box_line(
+        "  Counts are outcomes, not indicators; one URL may produce exact-URL and host results.",
+    );
+    for provider in [MALWAREBAZAAR, THREATFOX, URLHAUS] {
         let counts = extracted_outcome_counts(lookups, provider);
         ui::field(
             provider,
@@ -306,7 +331,7 @@ fn render_overview(
     }
 
     ui::section("ORIGINAL FILE HASH LOOKUP");
-    for provider in [MALWAREBAZAAR, THREATFOX] {
+    for provider in [MALWAREBAZAAR, THREATFOX, URLHAUS] {
         if let Some(lookup) = lookups.iter().find(|lookup| {
             lookup.subject == LookupSubject::OriginalFileSha256 && lookup.provider == provider
         }) {
@@ -321,40 +346,63 @@ fn render_overview(
     ui::section("INDICATOR RESULTS");
     if entries.is_empty() {
         ui::box_line("No extracted indicators to review.");
-    } else if ui::terminal_dimensions().0 >= 96 {
-        ui::box_line(
-            " No.  Type    Indicator                                      MalwareBazaar                    ThreatFox",
-        );
+    } else if view.table {
+        let widths = table_widths(ui::content_width());
+        ui::box_line(&format!(
+            "  {:>2}  {:<6}  {:<width$}  {:<TABLE_PROVIDER_WIDTH$}  {:<TABLE_PROVIDER_WIDTH$}  {:<TABLE_PROVIDER_WIDTH$}",
+            "#",
+            "TYPE",
+            "INDICATOR",
+            "MalwareBazaar",
+            "ThreatFox",
+            "URLhaus",
+            width = widths.indicator
+        ));
         ui::divider();
         for (index, entry) in entries.iter().enumerate().take(end).skip(first) {
+            let indicator = fit_indicator(entry.value, entry.indicator_type, widths.indicator);
+            let mb = provider_summary_cell(entry, MALWAREBAZAAR, TABLE_PROVIDER_WIDTH);
+            let tf = provider_summary_cell(entry, THREATFOX, TABLE_PROVIDER_WIDTH);
+            let uh = provider_summary_cell(entry, URLHAUS, TABLE_PROVIDER_WIDTH);
             ui::box_line(&format!(
-                " {:02}   {:<6}  {:<40}  {:<30}  {}",
+                "  {:>2}  {:<6}  {:<width$}  {:<TABLE_PROVIDER_WIDTH$}  {:<TABLE_PROVIDER_WIDTH$}  {:<TABLE_PROVIDER_WIDTH$}",
                 index + 1,
                 entry.indicator_type.as_str(),
-                overview_value(entry.value, entry.indicator_type),
-                provider_summary(entry, MALWAREBAZAAR),
-                provider_summary(entry, THREATFOX)
+                indicator,
+                mb,
+                tf,
+                uh,
+                width = widths.indicator
             ));
         }
     } else {
         for (index, entry) in entries.iter().enumerate().take(end).skip(first) {
             ui::box_line(&format!(
-                "[{:02}] {}  {}  |  MB {}  |  TF {}",
+                "[{:02}] {} {}",
                 index + 1,
                 entry.indicator_type.as_str(),
-                overview_value(entry.value, entry.indicator_type),
-                provider_summary(entry, MALWAREBAZAAR),
-                provider_summary(entry, THREATFOX)
+                fit_indicator(
+                    entry.value,
+                    entry.indicator_type,
+                    ui::content_width().saturating_sub(18)
+                )
             ));
+            for provider in [MALWAREBAZAAR, THREATFOX, URLHAUS] {
+                ui::box_line(&format!(
+                    "    {provider:<13} {}",
+                    provider_summary_cell(entry, provider, ui::content_width().saturating_sub(20))
+                ));
+            }
         }
     }
-    if pages > 1 {
+    if pages > 0 {
         ui::box_line(&format!(
-            "Page {} of {} · indicators {}–{}",
+            "Page {} of {} · indicators {}–{} of {}",
             page + 1,
             pages,
             first + 1,
-            end
+            end,
+            entries.len()
         ));
     }
     if entries.is_empty() && extraction.is_some_and(|data| data.indicators.is_empty()) {
@@ -381,21 +429,158 @@ fn extracted_outcome_counts(lookups: &[ProviderLookup], provider: &str) -> Outco
 }
 
 fn provider_summary(entry: &IndicatorEntry<'_>, provider: &str) -> String {
-    let Some(lookup) = entry
+    let mut provider_lookups = entry
         .lookups
         .iter()
-        .find(|lookup| lookup.provider == provider)
-    else {
+        .filter(|lookup| lookup.provider == provider);
+    let first = provider_lookups.next();
+    let Some(lookup) = first else {
         return "—".to_owned();
     };
-    if matches!(
-        &lookup.outcome,
-        LookupOutcome::Found(_) | LookupOutcome::ThreatFoxFound { .. }
-    ) {
-        format!("FOUND: {}", finding_name(&lookup.outcome))
+    let lookup = if is_positive_match(&lookup.outcome) {
+        lookup
     } else {
-        lookup.outcome.status().to_owned()
+        entry
+            .lookups
+            .iter()
+            .find(|candidate| {
+                candidate.provider == provider && is_positive_match(&candidate.outcome)
+            })
+            .unwrap_or(lookup)
+    };
+    if is_positive_match(&lookup.outcome) {
+        match &lookup.outcome {
+            LookupOutcome::UrlhausFound { details } => urlhaus_summary(details),
+            _ => format!("FOUND · {}", finding_name(&lookup.outcome)),
+        }
+    } else {
+        table_outcome_label(&lookup.outcome).to_owned()
     }
+}
+
+fn urlhaus_summary(details: &crate::report::UrlhausLookupDetails) -> String {
+    if let Some(count) = details.associated_url_count {
+        return format!("FOUND · {count} URLs");
+    }
+
+    let mut statuses = details
+        .associated_urls
+        .iter()
+        .filter_map(|record| record.status.as_deref())
+        .map(str::trim)
+        .filter(|status| !status.is_empty());
+    if let Some(status) = statuses.next()
+        && statuses.next().is_none()
+    {
+        match status.to_ascii_lowercase().as_str() {
+            "offline" => return "FOUND · Offline".to_owned(),
+            "online" => return "FOUND · Online".to_owned(),
+            _ => {}
+        }
+    }
+    if !details.associated_urls.is_empty() {
+        return format!("FOUND · {} URLs", details.associated_urls.len());
+    }
+    "FOUND".to_owned()
+}
+
+fn table_outcome_label(outcome: &LookupOutcome) -> &'static str {
+    match outcome {
+        LookupOutcome::NotFound => "NOT FOUND",
+        LookupOutcome::Invalid { .. }
+        | LookupOutcome::ApiError { .. }
+        | LookupOutcome::RequestError { .. } => "ERROR",
+        LookupOutcome::Unsupported { .. } => "UNSUPPORTED",
+        LookupOutcome::NotConfigured => "NOT CONFIGURED",
+        LookupOutcome::SkippedDuplicate { .. } => "SKIP DUPLICATE",
+        LookupOutcome::SkippedLookupLimit => "SKIP LIMIT",
+        LookupOutcome::Found(_)
+        | LookupOutcome::ThreatFoxFound { .. }
+        | LookupOutcome::UrlhausFound { .. } => "FOUND",
+    }
+}
+
+fn is_positive_match(outcome: &LookupOutcome) -> bool {
+    matches!(
+        outcome,
+        LookupOutcome::Found(_)
+            | LookupOutcome::ThreatFoxFound { .. }
+            | LookupOutcome::UrlhausFound { .. }
+    )
+}
+
+fn provider_summary_cell(entry: &IndicatorEntry<'_>, provider: &str, width: usize) -> String {
+    let summary = provider_summary(entry, provider);
+    let outcome = entry
+        .lookups
+        .iter()
+        .find(|lookup| lookup.provider == provider && is_positive_match(&lookup.outcome))
+        .or_else(|| {
+            entry
+                .lookups
+                .iter()
+                .find(|lookup| lookup.provider == provider)
+        })
+        .map(|lookup| &lookup.outcome);
+    let kind = outcome.map_or(ui::Status::Warning, provider_views::status_kind);
+    ui::styled_status(&fit_text(&summary, width), kind)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TableWidths {
+    indicator: usize,
+    table: bool,
+}
+
+fn table_widths(available_width: usize) -> TableWidths {
+    // Provider cells retain room for NOT CONFIGURED and SKIP DUPLICATE;
+    // below 14 indicator columns the stacked layout is easier to read.
+    TableWidths {
+        indicator: available_width.saturating_sub(70).max(1),
+        table: available_width >= 84,
+    }
+}
+
+fn fit_indicator(value: &str, indicator_type: IndicatorType, width: usize) -> String {
+    if indicator_type == IndicatorType::Url && value.chars().count() > width && width >= 3 {
+        if let Some(authority_end) = value.find("://").and_then(|scheme_end| {
+            value[scheme_end + 3..]
+                .find(['/', '?', '#'])
+                .map(|offset| scheme_end + 3 + offset)
+        }) {
+            let prefix = &value[..authority_end];
+            let prefix_chars = prefix.chars().count();
+            if prefix_chars + 2 < width {
+                let suffix_width = width - prefix_chars - 1;
+                let suffix = value.chars().rev().take(suffix_width).collect::<String>();
+                return format!("{prefix}…{}", suffix.chars().rev().collect::<String>());
+            }
+        }
+        fit_text(value, width)
+    } else if indicator_type == IndicatorType::Hash && value.chars().count() > width && width >= 3 {
+        let prefix = width.div_ceil(2);
+        let suffix = width - prefix - 1;
+        let chars = value.chars().collect::<Vec<_>>();
+        format!(
+            "{}…{}",
+            chars[..prefix].iter().collect::<String>(),
+            chars[chars.len() - suffix..].iter().collect::<String>()
+        )
+    } else {
+        fit_text(value, width)
+    }
+}
+
+fn fit_text(value: &str, width: usize) -> String {
+    let width = width.max(1);
+    let chars = value.chars().collect::<Vec<_>>();
+    if chars.len() <= width {
+        return value.to_owned();
+    }
+    if width == 1 {
+        return "…".into();
+    }
+    chars[..width - 1].iter().collect::<String>() + "…"
 }
 
 fn finding_name(outcome: &LookupOutcome) -> &str {
@@ -435,6 +620,7 @@ fn finding_name(outcome: &LookupOutcome) -> &str {
                     })
             })
             .unwrap_or("Record found"),
+        LookupOutcome::UrlhausFound { .. } => "URL record found",
         _ => "",
     }
 }
@@ -446,7 +632,9 @@ fn matched_indicator_count(entries: &[IndicatorEntry<'_>]) -> usize {
             entry.lookups.iter().any(|lookup| {
                 matches!(
                     &lookup.outcome,
-                    LookupOutcome::Found(_) | LookupOutcome::ThreatFoxFound { .. }
+                    LookupOutcome::Found(_)
+                        | LookupOutcome::ThreatFoxFound { .. }
+                        | LookupOutcome::UrlhausFound { .. }
                 )
             })
         })
@@ -457,17 +645,149 @@ fn page_capacity(count: usize, (columns, rows): (usize, usize)) -> usize {
     if count == 0 {
         return 1;
     }
-    // Reserve the fixed summary and footer height; stacked rows use two lines per indicator.
-    let lines_per_entry = if columns >= 96 { 1 } else { 2 };
-    rows.saturating_sub(36)
+    // Regular layout overhead (rows >= 36): header(5) + FILE SUMMARY section and
+    // fields(9) + PROVIDER OUTCOMES section, note, and fields(7) + HASH LOOKUP
+    // section and status rows(6) + INDICATOR RESULTS section(3) + post-indicator
+    // lines(3) + four navigation footers(12) + close(1) = 46 raw rows.
+    // render_screen_lines_for_rows removes ~8 blank lines (section spacers, footer
+    // spacers), netting ~38 rows of chrome. Using 35 was 3 rows too low and caused
+    // page_capacity to over-promise capacity that the clipping system then silently
+    // reclaimed.
+    //
+    // Compact layout overhead (rows < 36): header(5) + summary fields(3) +
+    // INDICATORS section(3) + navigation footers(10) + close(1) = 22 raw rows,
+    // netting ~20 after blank-line stripping.
+    let layout = overview_layout_without_capacity(columns, rows);
+    let lines_per_entry = indicator_line_count(layout);
+    let reserved_rows = if rows < 36 { 22 } else { 38 };
+    rows.saturating_sub(reserved_rows)
         .checked_div(lines_per_entry)
         .unwrap_or(0)
         .max(1)
         .min(count)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OverviewLayout {
+    compact: bool,
+    table: bool,
+    capacity: usize,
+}
+
+fn overview_layout(count: usize, (columns, rows): (usize, usize)) -> OverviewLayout {
+    OverviewLayout {
+        capacity: page_capacity(count, (columns, rows)),
+        ..overview_layout_without_capacity(columns, rows)
+    }
+}
+
+fn overview_layout_without_capacity(columns: usize, rows: usize) -> OverviewLayout {
+    OverviewLayout {
+        compact: rows < 36,
+        table: table_widths(columns.saturating_sub(4)).table,
+        capacity: 1,
+    }
+}
+
+fn indicator_line_count(layout: OverviewLayout) -> usize {
+    if layout.table { 1 } else { 4 }
+}
+
+fn render_compact_overview(
+    file: &FileInfo,
+    extraction: Option<&TextIndicators>,
+    entries: &[IndicatorEntry<'_>],
+    view: PageView,
+) {
+    ui::header("FILE INVESTIGATION", "Compact results");
+    ui::box_line(&format!(
+        "File: {} · {}",
+        fit_text(
+            &ui::sanitize_terminal_text(&file.name),
+            ui::content_width().saturating_sub(20)
+        ),
+        format_size(file.size)
+    ));
+    ui::box_line(&format!(
+        "SHA-256: {}",
+        overview_value(&file.sha256, IndicatorType::Hash)
+    ));
+    ui::box_line(&format!(
+        "Extracted: {} · positive indicators: {}",
+        entries.len(),
+        matched_indicator_count(entries)
+    ));
+    if entries.is_empty() {
+        ui::box_line(if extraction.is_some() {
+            "No indicators extracted from readable text."
+        } else {
+            "Indicator extraction skipped for binary or non-text content."
+        });
+    }
+    ui::section("INDICATORS");
+    if view.table {
+        let widths = table_widths(ui::content_width());
+        ui::box_line(&format!(
+            "  {:>2}  {:<6}  {:<width$}  {:<TABLE_PROVIDER_WIDTH$}  {:<TABLE_PROVIDER_WIDTH$}  {:<TABLE_PROVIDER_WIDTH$}",
+            "#",
+            "TYPE",
+            "INDICATOR",
+            "MalwareBazaar",
+            "ThreatFox",
+            "URLhaus",
+            width = widths.indicator
+        ));
+        ui::divider();
+        for (index, entry) in entries.iter().enumerate().take(view.end).skip(view.first) {
+            ui::box_line(&format!(
+                "  {:>2}  {:<6}  {:<width$}  {:<TABLE_PROVIDER_WIDTH$}  {:<TABLE_PROVIDER_WIDTH$}  {:<TABLE_PROVIDER_WIDTH$}",
+                index + 1,
+                entry.indicator_type.as_str(),
+                fit_indicator(entry.value, entry.indicator_type, widths.indicator),
+                provider_summary_cell(entry, MALWAREBAZAAR, TABLE_PROVIDER_WIDTH),
+                provider_summary_cell(entry, THREATFOX, TABLE_PROVIDER_WIDTH),
+                provider_summary_cell(entry, URLHAUS, TABLE_PROVIDER_WIDTH),
+                width = widths.indicator
+            ));
+        }
+    } else {
+        for (index, entry) in entries.iter().enumerate().take(view.end).skip(view.first) {
+            ui::box_line(&format!(
+                "[{}] {} {}",
+                index + 1,
+                entry.indicator_type.as_str(),
+                fit_indicator(
+                    entry.value,
+                    entry.indicator_type,
+                    ui::content_width().saturating_sub(18)
+                )
+            ));
+            for provider in [MALWAREBAZAAR, THREATFOX, URLHAUS] {
+                ui::box_line(&format!(
+                    "  {provider}: {}",
+                    provider_summary_cell(entry, provider, ui::content_width().saturating_sub(16))
+                ));
+            }
+        }
+    }
+    if view.pages > 1 {
+        ui::box_line(&format!(
+            "Page {} of {} · {}–{} / {}",
+            view.page + 1,
+            view.pages,
+            view.first + 1,
+            view.end,
+            entries.len()
+        ));
+    }
+}
+
 fn page_count(count: usize, capacity: usize) -> usize {
     count.saturating_add(capacity.max(1) - 1) / capacity.max(1)
+}
+
+fn page_for_indicator(indicator: usize, capacity: usize) -> usize {
+    indicator / capacity.max(1)
 }
 
 fn render_details(entry: &IndicatorEntry<'_>) {
@@ -497,7 +817,7 @@ fn render_original_details(file: &FileInfo, lookups: &[ProviderLookup]) {
     ui::header("ORIGINAL FILE HASH", "Recorded file-hash provider evidence");
     ui::section("ORIGINAL FILE SHA-256");
     ui::indicator_details(IndicatorType::Hash.as_str(), &file.sha256);
-    for provider in [MALWAREBAZAAR, THREATFOX] {
+    for provider in [MALWAREBAZAAR, THREATFOX, URLHAUS] {
         for lookup in lookups.iter().filter(|lookup| {
             lookup.subject == LookupSubject::OriginalFileSha256 && lookup.provider == provider
         }) {
@@ -549,6 +869,7 @@ fn type_index(indicator_type: IndicatorType) -> usize {
         IndicatorType::Hash => 0,
         IndicatorType::IP => 1,
         IndicatorType::Domain => 2,
+        IndicatorType::Url => 3,
     }
 }
 

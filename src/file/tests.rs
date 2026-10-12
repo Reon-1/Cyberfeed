@@ -1,4 +1,6 @@
-use super::{MAX_EXTRACTED_INDICATORS, TextScanner, inspect_file, normalize_user_path};
+use super::{
+    MAX_EXTRACTED_INDICATORS, TextScanner, decode_file_uri, inspect_file, normalize_user_path,
+};
 use crate::indicator::IndicatorType;
 use std::fs;
 use std::path::PathBuf;
@@ -35,6 +37,57 @@ fn extracts_hash_ip_and_domain_from_text_file() {
     );
 
     fs::remove_file(path).expect("test file should be removable");
+}
+
+#[test]
+fn extracts_url_and_all_payload_hash_lengths_without_losing_url_path_or_query() {
+    let mut single = TextScanner::default();
+    single.push_text("(https://Example.test/a/path?key=value&next=1),");
+    assert_eq!(
+        single.finish().unwrap().indicators[0].value,
+        "https://Example.test/a/path?key=value&next=1"
+    );
+    let mut scanner = TextScanner::default();
+    scanner.push_text(&format!(
+        "{} {} {} (https://Example.test/a/path?key=value&next=1), example.test 192.0.2.5",
+        "a".repeat(32),
+        "b".repeat(40),
+        "c".repeat(64),
+    ));
+    let indicators = scanner.finish().expect("input should be text").indicators;
+    assert_eq!(indicators.len(), 6);
+    assert_eq!(indicators[0].indicator_type, IndicatorType::Hash);
+    assert_eq!(indicators[0].value.len(), 32);
+    assert_eq!(indicators[1].value.len(), 40);
+    assert_eq!(indicators[2].value.len(), 64);
+    assert_eq!(indicators[3].indicator_type, IndicatorType::Url);
+    assert_eq!(
+        indicators[3].value,
+        "https://Example.test/a/path?key=value&next=1"
+    );
+    assert_eq!(indicators[4].indicator_type, IndicatorType::Domain);
+    assert_eq!(indicators[5].indicator_type, IndicatorType::IP);
+}
+
+#[test]
+fn exact_url_deduplication_preserves_case_sensitive_path_distinctions() {
+    let mut scanner = TextScanner::default();
+    scanner.push_text("https://example.test/A https://example.test/a https://example.test/A");
+    let indicators = scanner.finish().expect("input should be text").indicators;
+    assert_eq!(indicators.len(), 2);
+    assert_eq!(indicators[0].value, "https://example.test/A");
+    assert_eq!(indicators[1].value, "https://example.test/a");
+}
+
+#[test]
+fn extracted_urls_have_a_documented_per_type_cap() {
+    let mut scanner = TextScanner::default();
+    for index in 0..1_002 {
+        scanner.push_text(&format!("https://example.test/{index} "));
+    }
+    let extracted = scanner.finish().expect("URL text should be recognized");
+    assert_eq!(extracted.indicators.len(), 1_000);
+    assert!(extracted.limit_reached);
 }
 
 #[test]
@@ -145,6 +198,19 @@ fn normalizes_typed_and_dragged_paths_without_shell_processing() {
 }
 
 #[test]
+fn file_uri_decoder_rejects_remote_authorities() {
+    assert!(decode_file_uri("file://example.test/tmp/evidence").is_none());
+    assert_eq!(
+        decode_file_uri("file:///tmp/evidence"),
+        Some(std::path::PathBuf::from("/tmp/evidence"))
+    );
+    assert_eq!(
+        decode_file_uri("file://localhost/tmp/evidence"),
+        Some(std::path::PathBuf::from("/tmp/evidence"))
+    );
+}
+
+#[test]
 fn normalizes_shell_escaped_and_file_uri_drag_paths_only_when_target_exists() {
     let directory = std::env::temp_dir();
     let filename = format!("cyberfeed drag {}.txt", std::process::id());
@@ -196,4 +262,35 @@ fn inspection_rejects_missing_files_and_directories_cleanly() {
             .unwrap()
             .contains("not a regular file")
     );
+}
+
+#[test]
+fn extracts_bare_host_ip_from_endpoints_with_ports_and_deduplicates() {
+    let mut scanner = TextScanner::default();
+    scanner.push_text("185.112.146.10:8080 185.112.146.10 [2001:db8::1]:8443 [2001:db8::1]");
+    let indicators = scanner.finish().expect("input should be text").indicators;
+
+    assert_eq!(indicators.len(), 2);
+    assert_eq!(indicators[0].value, "185.112.146.10");
+    assert_eq!(indicators[0].indicator_type, IndicatorType::IP);
+    assert_eq!(indicators[1].value, "2001:db8::1");
+    assert_eq!(indicators[1].indicator_type, IndicatorType::IP);
+}
+
+#[test]
+fn rejects_invalid_length_hex_strings_from_file_extraction() {
+    let mut scanner = TextScanner::default();
+    // 30-char hex, 38-char hex, 65-char hex
+    scanner.push_text(&format!(
+        "{} {} {} {}",
+        "a".repeat(30),
+        "b".repeat(38),
+        "c".repeat(65),
+        "d".repeat(64),
+    ));
+    let indicators = scanner.finish().expect("input should be text").indicators;
+
+    assert_eq!(indicators.len(), 1);
+    assert_eq!(indicators[0].value, "d".repeat(64));
+    assert_eq!(indicators[0].indicator_type, IndicatorType::Hash);
 }

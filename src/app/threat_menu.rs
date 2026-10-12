@@ -2,11 +2,11 @@ use super::provider_views::{
     display_malware_data, display_top_attack_pairs, display_top_origins, display_top_targets,
 };
 use super::terminal::{self, InputEditor};
-use crate::cloudflare::{
+use crate::investigation::Investigation;
+use crate::providers::cloudflare::{
     fetch_cloudflare_attack_pairs, fetch_cloudflare_data, fetch_cloudflare_targets,
 };
-use crate::investigation::Investigation;
-use crate::malwarebazaar::fetch_malware_data;
+use crate::providers::malwarebazaar::fetch_malware_data;
 use crate::ui;
 use reqwest::blocking::Client;
 use std::time::Duration;
