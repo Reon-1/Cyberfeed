@@ -3,7 +3,7 @@ use crate::indicator::{Indicator, IndicatorType};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Exportable evidence for one local file inspection.
 ///
@@ -33,6 +33,18 @@ pub struct ReportFile {
 pub struct LocalInspection {
     pub text_extraction: TextExtraction,
     pub indicators: Vec<Indicator>,
+    /// Optional per-line provenance, present for log-hunt reports (schema v4).
+    #[serde(default)]
+    pub source_occurrences: Vec<SourceOccurrence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceOccurrence {
+    pub source_filename: String,
+    pub line_number: u64,
+    pub indicator: Indicator,
+    pub original_value: String,
+    pub context: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +198,7 @@ impl InvestigationReport {
             local_inspection: LocalInspection {
                 text_extraction: extraction.map_or(TextExtraction::SkippedBinaryOrNonText, |limit_reached| TextExtraction::Performed { limit_reached }),
                 indicators,
+                source_occurrences: Vec::new(),
             },
             provider_lookups: lookups,
             summary,

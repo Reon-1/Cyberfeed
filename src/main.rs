@@ -4,6 +4,7 @@ mod file;
 mod http_response;
 mod indicator;
 mod investigation;
+mod log_hunt;
 mod providers;
 mod report;
 mod ui;

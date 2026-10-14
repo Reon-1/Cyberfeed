@@ -81,7 +81,7 @@ pub(super) fn report_screen(saved: &SavedReport) {
     for line in saved.report.to_markdown().lines() {
         ui::box_line(line);
     }
-    ui::navigation_footer("Enter", "Return to the report list");
+    ui::navigation_footer("S / Enter", "Export STIX / return to the report list");
     ui::close_box();
 }
 

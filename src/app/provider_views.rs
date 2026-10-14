@@ -14,9 +14,12 @@ pub(crate) fn display_lookup(provider: &str, indicator: &str, outcome: &LookupOu
         LookupOutcome::Found(details) => display_malwarebazaar_match(details),
         LookupOutcome::ThreatFoxFound { findings } => {
             for finding in findings {
-                ui::field("IOC", format!("{} ({})", finding.ioc, finding.ioc_type));
                 ui::field(
-                    "IOC type info",
+                    "Indicator",
+                    format!("{} ({})", finding.ioc, finding.ioc_type),
+                );
+                ui::field(
+                    "Indicator type",
                     finding
                         .ioc_type_description
                         .as_deref()
@@ -138,11 +141,11 @@ pub(crate) fn display_lookup_details(
                 }
                 if finding.ioc != selected_indicator {
                     ui::field(
-                        "Matched IOC",
+                        "Matched indicator",
                         format!("{} ({})", finding.ioc, finding.ioc_type),
                     );
                 }
-                present_field("IOC type", Some(&finding.ioc_type));
+                present_field("Indicator type", Some(&finding.ioc_type));
                 present_field("Type info", finding.ioc_type_description.as_deref());
                 present_field("Threat type", finding.threat_type.as_deref());
                 present_field("Threat info", finding.threat_type_description.as_deref());

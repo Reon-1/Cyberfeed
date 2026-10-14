@@ -303,8 +303,8 @@ pub(super) fn check_indicator(
 ) {
     terminal::clear_screen();
     ui::header(
-        "CHECK AN INDICATOR",
-        "Check a hash, IP address, domain, or URL",
+        "CHECK A VALUE",
+        "Search a hash, IP address, domain, or web address",
     );
     ui::box_line("");
     ui::box_line("  Enter a hash, IP address, domain, or HTTP/HTTPS URL.");
@@ -421,8 +421,48 @@ pub(super) fn check_indicator(
     }
 
     terminal::clear_screen();
-    ui::header("INDICATOR CHECK", "Completed provider observations");
-    ui::section("INDICATOR");
+    ui::header(
+        "VALUE SEARCH",
+        "Results from the providers that were checked",
+    );
+    ui::section("SUMMARY");
+    if lookups.iter().any(|lookup| {
+        matches!(
+            lookup.outcome,
+            LookupOutcome::Found(_)
+                | LookupOutcome::ThreatFoxFound { .. }
+                | LookupOutcome::UrlhausFound { .. }
+        )
+    }) {
+        ui::box_line(
+            "At least one provider returned a matching record. Review its evidence below; this is not a verdict about a file.",
+        );
+    } else if lookups.iter().any(|lookup| {
+        matches!(
+            lookup.outcome,
+            LookupOutcome::ApiError { .. }
+                | LookupOutcome::RequestError { .. }
+                | LookupOutcome::Invalid { .. }
+        )
+    }) {
+        ui::box_line(
+            "One or more checks failed, so results are incomplete. See provider details below.",
+        );
+    } else if lookups.iter().any(|lookup| {
+        matches!(
+            lookup.outcome,
+            LookupOutcome::NotConfigured
+                | LookupOutcome::SkippedLookupLimit
+                | LookupOutcome::Unsupported { .. }
+        )
+    }) {
+        ui::box_line("Some providers could not check this value. Review which checks ran below.");
+    } else {
+        ui::box_line(
+            "No matching record was returned by the checks performed. This does not prove safety.",
+        );
+    }
+    ui::section("VALUE");
     ui::indicator_details(indicator_type.as_str(), &value);
     ui::section("PROVIDER RESULTS");
     for record in lookups {
@@ -442,7 +482,10 @@ pub(super) fn check_indicator(
 
 pub(super) fn view_indicators(investigation: &Investigation) {
     terminal::clear_screen();
-    ui::header("COLLECTED INDICATORS", "Evidence in this investigation");
+    ui::header(
+        "CURRENT SESSION",
+        "Values checked and results recorded so far",
+    );
     investigation.display_indicators();
     if !investigation.provider_lookups().is_empty() {
         ui::section("PROVIDER OBSERVATIONS");

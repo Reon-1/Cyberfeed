@@ -48,6 +48,56 @@ pub(super) fn new_editor() -> io::Result<InputEditor> {
     Ok(InputEditor::default())
 }
 
+/// Read a credential without echoing characters, storing them in input history,
+/// or placing them in terminal redraw buffers. Escape and Ctrl+C cancel.
+pub(super) fn read_secret(prompt: &str) -> Option<String> {
+    let _raw_mode = match RawMode::enable() {
+        Ok(raw_mode) => raw_mode,
+        Err(_) => return None,
+    };
+    print!("{}", ui::sanitize_terminal_text(prompt));
+    if io::stdout().flush().is_err() {
+        return None;
+    }
+    let mut secret = String::new();
+    loop {
+        match event::read() {
+            Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Enter => {
+                    println!();
+                    return Some(secret);
+                }
+                KeyCode::Esc | KeyCode::Char('c')
+                    if key.code == KeyCode::Esc
+                        || key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    println!();
+                    return None;
+                }
+                KeyCode::Backspace => {
+                    secret.pop();
+                }
+                KeyCode::Char(character)
+                    if !character.is_control()
+                        && !key.modifiers.intersects(
+                            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                        ) =>
+                {
+                    secret.push(character);
+                }
+                _ => {}
+            },
+            Ok(Event::Resize(_, _)) => {}
+            Ok(_) => {}
+            Err(_) => {
+                println!();
+                secret.clear();
+                return None;
+            }
+        }
+    }
+}
+
 pub(super) fn read_input(editor: &mut InputEditor, prompt: &str, path_completion: bool) -> String {
     let _raw_mode = match RawMode::enable() {
         Ok(raw_mode) => raw_mode,
@@ -407,7 +457,7 @@ pub(super) fn show_error(message: &str) {
 
 pub(super) fn show_source_error(error: &str) {
     clear_screen();
-    ui::header("THREAT INTELLIGENCE", "The source could not be loaded");
+    ui::header("THREAT FEEDS", "The live data source could not be loaded");
     ui::section("REQUEST FAILED");
     ui::error("The intelligence source returned an error.");
     ui::field("Details", error);

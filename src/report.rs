@@ -1,9 +1,11 @@
 //! Versioned investigation report model, rendering, and local persistence.
 mod model;
 mod render;
+mod stix;
 mod storage;
 
 pub use model::*;
+pub use stix::{save_stix_bundle, stix_indicator_count};
 pub use storage::save_report;
 
 #[cfg(test)]

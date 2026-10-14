@@ -30,6 +30,20 @@ impl InvestigationReport {
             }
             out.push('\n');
         }
+        if !self.local_inspection.source_occurrences.is_empty() {
+            out.push_str("## Local source occurrences\n\n| Source | Line | Type | Original value | Context |\n|---|---:|---|---|---|\n");
+            for occurrence in &self.local_inspection.source_occurrences {
+                out.push_str(&format!(
+                    "| `{}` | {} | {} | `{}` | {} |\n",
+                    md_code(&occurrence.source_filename),
+                    occurrence.line_number,
+                    occurrence.indicator.indicator_type.as_str(),
+                    md_code(&occurrence.original_value),
+                    md_plain(&occurrence.context)
+                ));
+            }
+            out.push_str("\nThese are locally observed log values. They are separate from provider lookup evidence.\n\n");
+        }
         out.push_str("## Original file hash lookup\n\n");
         let originals = self
             .provider_lookups
@@ -157,7 +171,7 @@ fn md_plain(s: &str) -> String {
         if c.is_control() {
             safe.push(' ');
         } else {
-            if matches!(c, '\\' | '#' | '*' | '_' | '[' | ']' | '>' | '`') {
+            if matches!(c, '\\' | '#' | '*' | '_' | '[' | ']' | '>' | '`' | '|') {
                 safe.push('\\');
             }
             safe.push(c);

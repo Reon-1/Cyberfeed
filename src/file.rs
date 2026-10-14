@@ -117,7 +117,19 @@ fn decode_file_uri(input: &str) -> Option<PathBuf> {
             index += 1;
         }
     }
-    String::from_utf8(decoded).ok().map(PathBuf::from)
+    let path = String::from_utf8(decoded).ok()?;
+    #[cfg(windows)]
+    let path = path
+        .strip_prefix('/')
+        .filter(|path| {
+            let bytes = path.as_bytes();
+            bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && bytes[2] == b'/'
+        })
+        .unwrap_or(&path);
+    Some(PathBuf::from(path))
 }
 
 pub fn inspect_file(path: &Path) -> Result<FileInspection, String> {

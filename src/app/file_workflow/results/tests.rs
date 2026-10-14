@@ -1,8 +1,8 @@
 use super::{
     IndicatorEntry, LiveProgress, OutcomeCounts, Selection, TABLE_PROVIDER_WIDTH,
     extracted_outcome_counts, fit_indicator, fit_text, indicator_entries, indicator_line_count,
-    matched_indicator_count, overview_layout, overview_value, page_capacity, page_count,
-    page_for_indicator, parse_selection, provider_summary, table_widths,
+    is_positive_match, matched_indicator_count, overview_layout, overview_value, page_capacity,
+    page_count, page_for_indicator, parse_selection, provider_summary, table_widths,
 };
 use crate::indicator::IndicatorType;
 use crate::report::{LookupOutcome, LookupSubject, MatchDetails, ProviderLookup, ThreatFoxFinding};
@@ -78,15 +78,40 @@ fn provider_summary_counts_each_recorded_outcome_once_by_category() {
     }
     assert_eq!(counts.not_found, 1);
     assert_eq!(counts.found, 3);
-    assert_eq!(counts.errors, 3);
+    assert_eq!(counts.errors, 2);
+    assert_eq!(counts.invalid, 1);
     assert_eq!(counts.unconfigured, 1);
     assert_eq!(counts.unsupported, 1);
     assert_eq!(counts.skipped_duplicate, 1);
     assert_eq!(counts.skipped_limit, 1);
     assert_eq!(
         counts.summary(),
-        "FOUND 3 · NOT FOUND 1 · ERROR 3 · UNSUPPORTED 1 · NOT CONFIGURED 1 · SKIPPED DUPLICATE 1 · SKIPPED LIMIT 1"
+        "FOUND 3 · NOT FOUND 1 · ERROR 2 · INVALID 1 · UNSUPPORTED 1 · NOT CONFIGURED 1 · SKIPPED DUPLICATE 1 · SKIPPED LIMIT 1"
     );
+}
+
+#[test]
+fn quick_summary_treats_only_provider_matches_as_positive_findings() {
+    assert!(is_positive_match(&LookupOutcome::Found(MatchDetails {
+        matched_sha256: "a".repeat(64),
+        first_seen: "today".into(),
+        file_type: "text".into(),
+        sample_filename: None,
+        signature: None,
+    })));
+    for outcome in [
+        LookupOutcome::NotFound,
+        LookupOutcome::NotConfigured,
+        LookupOutcome::RequestError {
+            explanation: "offline".into(),
+        },
+        LookupOutcome::Unsupported {
+            explanation: "not supported".into(),
+        },
+        LookupOutcome::SkippedLookupLimit,
+    ] {
+        assert!(!is_positive_match(&outcome));
+    }
 }
 
 #[test]

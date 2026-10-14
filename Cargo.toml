@@ -11,3 +11,4 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.10.9"
 rustyline = "17"
+uuid = { version = "1.28", features = ["v4"] }

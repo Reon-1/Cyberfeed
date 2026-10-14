@@ -1,7 +1,8 @@
 use super::{
-    DrawOp, MENU_KEY_WIDTH, Status, geometry_for_columns, menu_key, outcome_style, render_op_lines,
-    render_screen_lines_for_rows, sanitize_terminal_text, terminal_too_small, visible_width,
-    width_for_columns, wrap_text, write_lines_to,
+    DrawOp, INNER_WIDTH, MENU_KEY_WIDTH, MUTED, Status, colors_enabled_for, geometry_for_columns,
+    menu_key, outcome_style, render_op_lines, render_screen_lines_for_rows, sanitize_terminal_text,
+    strip_ansi_sgr, terminal_too_small, visible_width, width_for_columns, wrap_text,
+    write_lines_to,
 };
 use crate::report::{LookupOutcome, MatchDetails};
 
@@ -68,6 +69,17 @@ fn ignores_ansi_sequences_when_measuring() {
 }
 
 #[test]
+fn no_color_and_dumb_terminal_modes_disable_sgr_without_touching_other_text() {
+    assert!(!colors_enabled_for(true, Some("xterm-256color")));
+    assert!(!colors_enabled_for(false, Some("dumb")));
+    assert!(colors_enabled_for(false, Some("xterm-256color")));
+    assert_eq!(
+        strip_ansi_sgr("\x1b[1;36mCYBERFEED\x1b[0m \x1b[2J"),
+        "CYBERFEED \x1b[2J"
+    );
+}
+
+#[test]
 fn preserves_padding_when_line_fits() {
     assert_eq!(
         wrap_text("  Name       : test.txt", 80),
@@ -94,16 +106,33 @@ fn counts_wide_unicode_characters_by_terminal_columns() {
 fn frame_width_fits_narrow_terminals_and_stays_at_a_sensible_maximum() {
     assert_eq!(width_for_columns(41), 39);
     assert_eq!(width_for_columns(82), 80);
-    assert_eq!(width_for_columns(160), 112);
+    assert_eq!(width_for_columns(160), INNER_WIDTH);
     assert_eq!(width_for_columns(1), 1);
 }
 
 #[test]
 fn frame_centers_in_wide_terminals_and_expands_to_available_width() {
-    assert_eq!(geometry_for_columns(120), (112, 3));
-    assert_eq!(geometry_for_columns(160), (112, 23));
+    assert_eq!(geometry_for_columns(120), (INNER_WIDTH, 11));
+    assert_eq!(geometry_for_columns(160), (INNER_WIDTH, 31));
     assert_eq!(geometry_for_columns(42), (40, 0));
     assert_eq!(geometry_for_columns(1), (0, 0));
+}
+
+#[test]
+fn panels_keep_the_terminal_background_and_use_readable_secondary_text() {
+    let rendered = render_op_lines(
+        &DrawOp::MenuItem(
+            "1".into(),
+            "Check a File".into(),
+            "Analyze a file on this computer".into(),
+        ),
+        80,
+    )
+    .join("\n");
+
+    assert!(!rendered.contains("\x1b[48;"));
+    assert_eq!(MUTED, "\x1b[37m");
+    assert!(!rendered.contains("\x1b[0m\x1b[48;"));
 }
 
 #[test]
@@ -127,11 +156,62 @@ fn retained_screen_operations_reflow_without_overflow_at_representative_widths()
 }
 
 #[test]
+fn menu_descriptions_align_under_labels_and_notes_reflow_with_terminal_width() {
+    let menu = DrawOp::MenuItem(
+        "1".into(),
+        "Check".into(),
+        "Analyze this very long local file path without uploading any contents".into(),
+    );
+    let note = DrawOp::Note(
+        "Local file checks work without credentials; live provider searches need optional credentials.".into(),
+    );
+    for columns in [80, 40, 20] {
+        let menu_lines = render_op_lines(&menu, columns);
+        let label = menu_lines
+            .iter()
+            .find(|line| line.contains("Check"))
+            .unwrap();
+        let description = menu_lines
+            .iter()
+            .find(|line| line.contains("Analyze"))
+            .unwrap();
+        let plain = |line: &str| {
+            let mut result = String::new();
+            let mut in_escape = false;
+            for character in line.chars() {
+                if in_escape {
+                    if character.is_ascii_alphabetic() {
+                        in_escape = false;
+                    }
+                } else if character == '\x1b' {
+                    in_escape = true;
+                } else {
+                    result.push(character);
+                }
+            }
+            result
+        };
+        let label_column = plain(label).find("Check").unwrap();
+        let description_column = plain(description).find("Analyze").unwrap();
+        assert_eq!(label_column, description_column);
+
+        let note_lines = render_op_lines(&note, columns);
+        assert!(note_lines.len() > 1);
+        assert!(note_lines.iter().all(|line| visible_width(line) <= columns));
+        assert!(
+            note_lines
+                .iter()
+                .any(|line| plain(line).contains("credentials"))
+        );
+    }
+}
+
+#[test]
 fn replayed_menu_remains_grouped_inside_a_centered_connected_panel() {
     let operations = [
         DrawOp::Open,
         DrawOp::Center(">_ CYBERFEED".into()),
-        DrawOp::Center("Defensive Cybersecurity Investigation".into()),
+        DrawOp::Center("Check files, search logs, and review evidence".into()),
         DrawOp::Divider,
         DrawOp::Line("".into()),
         DrawOp::MenuItem(
@@ -141,22 +221,32 @@ fn replayed_menu_remains_grouped_inside_a_centered_connected_panel() {
         ),
         DrawOp::MenuItem(
             "2".into(),
-            "Investigation".into(),
-            "Continue and review this session's evidence".into(),
+            "Current Session".into(),
+            "Check a value or review results from this session".into(),
         ),
         DrawOp::MenuItem(
             "3".into(),
-            "Threat Intelligence".into(),
-            "Browse external intelligence sources".into(),
+            "Search Logs".into(),
+            "Find IPs, domains, URLs, and hashes in a local text or JSONL log".into(),
         ),
         DrawOp::MenuItem(
             "4".into(),
             "Saved Reports".into(),
-            "Browse and review saved investigations offline".into(),
+            "Review past file and log investigations".into(),
         ),
         DrawOp::Line("".into()),
-        DrawOp::MenuItem("0".into(), "Exit".into(), "Close CyberFeed".into()),
+        DrawOp::MenuItem(
+            "5".into(),
+            "More Tools".into(),
+            "Offline demo, setup check, batch files, and live threat feeds".into(),
+        ),
+        DrawOp::Note(
+            "File checks, log searches, and saved reports work without provider credentials."
+                .into(),
+        ),
         DrawOp::Line("".into()),
+        DrawOp::Divider,
+        DrawOp::Footer("0".into(), "Exit · choose 1–5 above".into()),
         DrawOp::Close,
     ];
 
@@ -180,24 +270,25 @@ fn replayed_menu_remains_grouped_inside_a_centered_connected_panel() {
             || line.contains('╚')
             || line.contains('╠')));
 
-        let positions = ["[1]", "[2]", "[3]", "[4]", "[0]"]
+        let positions = ["[1]", "[2]", "[3]", "[4]", "[5]", "[0]"]
             .map(|label| lines.iter().position(|line| line.contains(label)).unwrap());
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
         for (position, title) in positions.iter().zip([
             "Check a File",
-            "Investigation",
-            "Threat Intelligence",
+            "Current Session",
+            "Search Logs",
             "Saved Reports",
+            "More Tools",
             "Exit",
         ]) {
             assert!(lines[*position].contains(title));
         }
-        for (position, description) in positions.iter().zip([
+        for (position, description) in positions[..5].iter().zip([
             "Analyze a file on this computer",
-            "Continue and review this session's evidence",
-            "Browse external intelligence sources",
-            "Browse and review saved investigations offline",
-            "Close CyberFeed",
+            "Check a value or review results from this session",
+            "Find IPs, domains, URLs, and hashes",
+            "Review past file and log investigations",
+            "Offline demo, setup check, batch files, and live threat feeds",
         ]) {
             let next = lines[*position + 1..]
                 .iter()
@@ -208,12 +299,13 @@ fn replayed_menu_remains_grouped_inside_a_centered_connected_panel() {
                 "description stays grouped with its option"
             );
         }
+        assert!(lines[positions[5]].contains("choose 1–5 above"));
     }
 
-    // An 18-row terminal cannot fit all 18 menu rows plus its prompt. Compact
-    // one spacer so the closing border remains visible and the prompt gets row 18.
+    // A short terminal drops spacing and the optional note while keeping the
+    // exit hint, closing border, and room for the prompt.
     let compact = render_screen_lines_for_rows(&operations, 80, 17);
-    assert_eq!(compact.len(), 17);
+    assert!(compact.len() <= 17);
     assert!(compact.last().unwrap().contains('╚'));
     assert!(
         compact
@@ -230,10 +322,7 @@ fn replayed_menu_remains_grouped_inside_a_centered_connected_panel() {
         .flat_map(|operation| render_op_lines(operation, 112))
         .collect::<Vec<_>>();
     assert!(narrow.len() > wide.len());
-    assert!(
-        wide.iter()
-            .any(|line| line.contains("investigations offline"))
-    );
+    assert!(wide.iter().any(|line| line.contains("investigations")));
 }
 
 #[test]

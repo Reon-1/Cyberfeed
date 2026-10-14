@@ -18,19 +18,25 @@ CyberFeed is a Rust CLI for local file inspection, indicator extraction, passive
 
 ## Current architecture (verify against code before relying on this)
 - `src/main.rs`: application entry point.
+- `src/config.rs`: credential presence/loading and the narrow, confirmed `.env` editor; never expose credential values.
 - `src/app/`: terminal menus and application workflows.
 - `src/app/file_workflow.rs`: interactive file-investigation flow.
 - `src/app/file_workflow/lookups.rs`: provider lookup scheduling, limits, deduplication, and result normalization.
 - `src/indicator.rs`: indicator types and classification.
 - `src/file.rs`: local file hashing and text indicator extraction; never execute inspected files or visit extracted URLs.
+- `src/log_hunt.rs`: bounded streaming text/JSONL extraction with per-occurrence source locations.
 - `src/investigation.rs`: investigation/session evidence.
 - `src/providers/malwarebazaar.rs`, `src/providers/threatfox.rs`, `src/providers/urlhaus.rs`: provider-specific API behavior.
 - `src/providers/cloudflare.rs`: Cloudflare Radar/feed behavior; do not assume it supports the same lookup operations as the IOC providers.
 - `src/providers/mod.rs`: external API client module declarations.
 - `src/report/`: report models, summary calculation, rendering, and persistence.
+- `src/report/stix.rs`: STIX 2.1 bundle construction and separate local export.
 - `src/app/saved_reports/`: saved-report browsing and comparison.
 
 Keep domain/evidence logic separate from terminal presentation and provider-specific JSON where practical. Add abstractions only when they reduce real coupling or make behavior testable; do not add a trait, plugin framework, async runtime, database, or caching layer speculatively.
+Batch local triage and log hunting are local-only today; do not represent absent provider lookups as negative findings. Log occurrence provenance is an optional schema-v4 field; deserialize older reports with the serde default and retain compatibility tests.
+
+Credential changes must preserve unrelated `.env` entries, require confirmation, keep input hidden, and never include values in errors or reports. Treat externally supplied environment variables as higher priority than `.env`; do not make authentication requests during setup. Automated tests must use dummy credentials and temporary directories. The CI matrix targets stable Rust on Linux, macOS, and Windows; report only platforms that actually passed.
 
 Terminal input is event-driven through Crossterm. Handle resize events by redrawing the active screen, preserving prompt contents and navigation state, and restoring raw mode/cursor visibility on every exit path. Terminal screens should use current dimensions, compact layouts for small windows, sanitized untrusted text, and shared outcome styling. Explain outcomes in plain language without replacing evidence or implying safety. Report comparisons must distinguish same-file identity from different contents and treat missing, unsupported, skipped, unconfigured, or failed evidence as inconclusive where appropriate.
 

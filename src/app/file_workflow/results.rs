@@ -110,6 +110,7 @@ struct OutcomeCounts {
     found: usize,
     not_found: usize,
     errors: usize,
+    invalid: usize,
     unsupported: usize,
     unconfigured: usize,
     skipped_duplicate: usize,
@@ -123,9 +124,8 @@ impl OutcomeCounts {
             | LookupOutcome::ThreatFoxFound { .. }
             | LookupOutcome::UrlhausFound { .. } => self.found += 1,
             LookupOutcome::NotFound => self.not_found += 1,
-            LookupOutcome::Invalid { .. }
-            | LookupOutcome::ApiError { .. }
-            | LookupOutcome::RequestError { .. } => self.errors += 1,
+            LookupOutcome::ApiError { .. } | LookupOutcome::RequestError { .. } => self.errors += 1,
+            LookupOutcome::Invalid { .. } => self.invalid += 1,
             LookupOutcome::Unsupported { .. } => self.unsupported += 1,
             LookupOutcome::NotConfigured => self.unconfigured += 1,
             LookupOutcome::SkippedDuplicate { .. } => self.skipped_duplicate += 1,
@@ -138,6 +138,7 @@ impl OutcomeCounts {
             ("FOUND", self.found),
             ("NOT FOUND", self.not_found),
             ("ERROR", self.errors),
+            ("INVALID", self.invalid),
             ("UNSUPPORTED", self.unsupported),
             ("NOT CONFIGURED", self.unconfigured),
             ("SKIPPED DUPLICATE", self.skipped_duplicate),
@@ -188,6 +189,146 @@ pub(super) fn review(
     lookups: &[ProviderLookup],
 ) {
     let entries = indicator_entries(extraction, lookups);
+    loop {
+        terminal::clear_screen();
+        ui::header(
+            "QUICK SUMMARY",
+            "File inspection and recorded provider outcomes",
+        );
+        ui::section("INSPECTED FILE");
+        ui::field("Filename", &file.name);
+        ui::field("Size", format_size(file.size));
+        ui::field(
+            "Local analysis",
+            "SHA-256 calculated; file contents were not uploaded",
+        );
+        match extraction {
+            Some(data) => {
+                ui::field("Extracted values", data.indicators.len());
+                if data.limit_reached {
+                    ui::warning(
+                        "The local extraction limit was reached; results may be incomplete.",
+                    );
+                }
+            }
+            None => ui::field("Text analysis", "Not available for this file"),
+        }
+        ui::section("PROVIDER CHECKS");
+        let attempted = lookups
+            .iter()
+            .filter(|lookup| lookup.retrieved_at_unix_seconds.is_some())
+            .count();
+        ui::field("Requests attempted", attempted);
+        if lookups.is_empty() {
+            ui::field("Results", "No provider checks were recorded");
+        } else {
+            for provider in [MALWAREBAZAAR, THREATFOX, URLHAUS] {
+                let counts = all_outcome_counts(lookups, provider);
+                if counts != OutcomeCounts::default() {
+                    ui::field(provider, counts.summary());
+                }
+            }
+        }
+        let original_file_matches = lookups
+            .iter()
+            .filter(|lookup| {
+                lookup.subject == LookupSubject::OriginalFileSha256
+                    && is_positive_match(&lookup.outcome)
+            })
+            .count();
+        if original_file_matches > 0 {
+            ui::status(
+                "File hash",
+                &format!("Matching record from {original_file_matches} provider(s)"),
+                ui::Status::Warning,
+            );
+        } else if lookups
+            .iter()
+            .any(|lookup| lookup.subject == LookupSubject::OriginalFileSha256)
+        {
+            ui::field(
+                "File hash",
+                "No positive match recorded; review check status",
+            );
+        } else {
+            ui::field("File hash", "No provider check was recorded");
+        }
+        let matched = matched_indicator_count(&entries);
+        if matched > 0 {
+            ui::status(
+                "Provider matches",
+                &format!("{matched} extracted value(s) had a matching record; review evidence"),
+                ui::Status::Warning,
+            );
+        } else {
+            ui::note(
+                "No extracted value match was recorded. This does not establish that a file is safe.",
+            );
+        }
+        let errors = lookups
+            .iter()
+            .filter(|lookup| {
+                matches!(
+                    lookup.outcome,
+                    LookupOutcome::ApiError { .. } | LookupOutcome::RequestError { .. }
+                )
+            })
+            .count();
+        if errors > 0 {
+            ui::warning(&format!(
+                "{errors} provider check(s) failed; their results are unknown."
+            ));
+        }
+        if lookups
+            .iter()
+            .any(|lookup| matches!(lookup.outcome, LookupOutcome::Invalid { .. }))
+        {
+            ui::note("One or more values could not be checked because their format was invalid.");
+        }
+        if lookups.iter().any(|lookup| {
+            matches!(
+                lookup.outcome,
+                LookupOutcome::NotConfigured
+                    | LookupOutcome::Unsupported { .. }
+                    | LookupOutcome::SkippedLookupLimit
+            )
+        }) {
+            ui::note(
+                "Some checks were unavailable, unsupported, or skipped; see detailed evidence.",
+            );
+        }
+        ui::note(
+            "Choose D for detailed evidence. A save-report prompt follows; reports are stored in reports/.",
+        );
+        ui::navigation_footer("D / 0", "Detailed evidence / continue to save prompt");
+        ui::close_box();
+        match terminal::read_input(editor, "  Choose D or 0: ", false)
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "d" => review_details(editor, file, extraction, lookups),
+            "0" => return,
+            _ => terminal::invalid_choice(),
+        }
+    }
+}
+
+fn all_outcome_counts(lookups: &[ProviderLookup], provider: &str) -> OutcomeCounts {
+    let mut counts = OutcomeCounts::default();
+    for lookup in lookups.iter().filter(|lookup| lookup.provider == provider) {
+        counts.record(&lookup.outcome);
+    }
+    counts
+}
+
+/// Detailed view of the same recorded observations used in the quick summary.
+fn review_details(
+    editor: &mut InputEditor,
+    file: &FileInfo,
+    extraction: Option<&TextIndicators>,
+    lookups: &[ProviderLookup],
+) {
+    let entries = indicator_entries(extraction, lookups);
     let mut page = 0usize;
     let mut previous_capacity = None;
     loop {
@@ -221,9 +362,9 @@ pub(super) fn review(
             },
         );
         let navigation = if pages > 1 {
-            "N/P page · number details · F file hash · 0 continue"
+            "N/P page · number details · F file hash · 0 summary"
         } else {
-            "number details · F file hash · 0 continue"
+            "number details · F file hash · 0 summary"
         };
         ui::box_line("");
         ui::divider();
@@ -239,7 +380,7 @@ pub(super) fn review(
             Selection::Open(index) => {
                 terminal::clear_screen();
                 render_details(&entries[index]);
-                ui::navigation_footer("Enter", "Return to investigation overview");
+                ui::navigation_footer("Enter", "Return to quick summary");
                 ui::close_box();
                 // Any completed input returns to the already-built overview; no lookup is rerun.
                 let _ = terminal::read_input(editor, "  Press Enter to return: ", false);
@@ -247,7 +388,7 @@ pub(super) fn review(
             Selection::Original => {
                 terminal::clear_screen();
                 render_original_details(file, lookups);
-                ui::navigation_footer("Enter", "Return to investigation overview");
+                ui::navigation_footer("Enter", "Return to quick summary");
                 ui::close_box();
                 let _ = terminal::read_input(editor, "  Press Enter to return: ", false);
             }
@@ -306,13 +447,11 @@ fn render_overview(
     ui::field(
         "Matches",
         format!(
-            "{} distinct indicators with a positive provider match",
+            "{} unique extracted values matched a provider record",
             matched_indicator_count(entries)
         ),
     );
-    ui::box_line(
-        "  A provider match is evidence about that indicator, not a verdict on the whole file.",
-    );
+    ui::note("A provider match is evidence about that value, not a verdict on the whole file.");
 
     ui::section("PROVIDER LOOKUP OUTCOMES");
     ui::box_line(

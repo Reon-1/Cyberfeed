@@ -11,10 +11,7 @@ use std::path::Path;
 pub(super) fn menu(editor: &mut InputEditor) {
     loop {
         terminal::clear_screen();
-        ui::header(
-            "SAVED REPORTS",
-            "Review local investigation snapshots offline",
-        );
+        ui::header("SAVED REPORTS", "Your saved investigations · newest first");
         let collection = match report_files::discover(Path::new("reports")) {
             Ok(collection) => collection,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -37,7 +34,7 @@ pub(super) fn menu(editor: &mut InputEditor) {
         view::report_list(&collection);
         let selection = terminal::read_input(
             editor,
-            "\n  Select a report number, C to compare, or 0 to return: ",
+            "\n  Choose a report, C to compare, or 0 to go back: ",
             false,
         );
         if selection == "0" {
@@ -51,8 +48,30 @@ pub(super) fn menu(editor: &mut InputEditor) {
             Some(index) => {
                 terminal::clear_screen();
                 view::report_screen(&collection.reports[index]);
-                let _ =
-                    terminal::read_input(editor, "\n  Press Enter to return to the list: ", false);
+                let action = terminal::read_input(
+                    editor,
+                    "\n  Enter to return, or S to export STIX 2.1: ",
+                    false,
+                );
+                if action.eq_ignore_ascii_case("s") {
+                    if crate::report::stix_indicator_count(&collection.reports[index].report) == 0 {
+                        terminal::show_error(
+                            "This report contains no supported indicators to export.",
+                        );
+                        continue;
+                    }
+                    match crate::report::save_stix_bundle(
+                        &collection.reports[index].report,
+                        Path::new("reports/stix"),
+                    ) {
+                        Ok(path) => {
+                            terminal::show_error(&format!("STIX bundle saved: {}", path.display()))
+                        }
+                        Err(error) => {
+                            terminal::show_error(&format!("Could not save STIX bundle: {error}"))
+                        }
+                    }
+                }
             }
             None => terminal::invalid_choice(),
         }

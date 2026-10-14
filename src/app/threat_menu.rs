@@ -27,13 +27,14 @@ pub(super) fn menu(
 ) {
     loop {
         terminal::clear_screen();
-        ui::header(
-            "THREAT INTELLIGENCE",
-            "Browse external intelligence sources",
-        );
+        ui::header("THREAT FEEDS", "Browse optional, live public data");
         ui::box_line("");
-        ui::menu_item("1", "MalwareBazaar", "Recent malware samples");
-        ui::menu_item("2", "Cloudflare Radar", "Live Layer 7 attack telemetry");
+        ui::menu_item(
+            "1",
+            "MalwareBazaar",
+            "Browse recently reported malware samples",
+        );
+        ui::menu_item("2", "Cloudflare Radar", "View broad internet attack trends");
         ui::box_line("");
         ui::menu_item("0", "Back", "Return to the main menu");
         ui::box_line("");
@@ -56,14 +57,14 @@ fn malwarebazaar_menu(
 ) {
     loop {
         terminal::clear_screen();
-        ui::header("MALWAREBAZAAR", "Recent malware sample intelligence");
+        ui::header("MALWAREBAZAAR", "Recently reported malware samples");
         ui::box_line("");
         ui::menu_item(
             "1",
             "Recent Samples",
             "View the latest MalwareBazaar samples",
         );
-        ui::menu_item("2", "Filter by Country", "View samples from one country");
+        ui::menu_item("2", "Choose a Country", "Narrow the sample list by country");
         ui::box_line("");
         ui::menu_item("0", "Back", "Return to Threat Intelligence");
         ui::box_line("");
@@ -129,7 +130,7 @@ fn filter_malware_samples(
 fn cloudflare_menu(editor: &mut InputEditor, client: &Client, token: &str) {
     loop {
         terminal::clear_screen();
-        ui::header("CLOUDFLARE RADAR", "Live Layer 7 attack telemetry");
+        ui::header("CLOUDFLARE RADAR", "Live internet attack trends");
         ui::box_line("");
         ui::menu_item("1", "Top Attack Origins", "Countries where attacks begin");
         ui::menu_item("2", "Top Attack Targets", "Countries receiving attacks");
@@ -166,7 +167,7 @@ fn run_cloudflare_feed(editor: &mut InputEditor, client: &Client, token: &str, f
     const MAX_REFRESHES: usize = 5;
     for refresh in 0..MAX_REFRESHES {
         terminal::clear_screen();
-        ui::header("CLOUDFLARE RADAR", "Live Layer 7 attack telemetry");
+        ui::header("CLOUDFLARE RADAR", "Live internet attack trends");
         ui::box_line("");
 
         match feed {

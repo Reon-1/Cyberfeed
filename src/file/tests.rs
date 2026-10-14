@@ -5,12 +5,27 @@ use crate::indicator::IndicatorType;
 use std::fs;
 use std::path::PathBuf;
 
+fn test_thread_name() -> String {
+    std::thread::current()
+        .name()
+        .unwrap_or("test")
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 #[test]
 fn extracts_hash_ip_and_domain_from_text_file() {
     let path = std::env::temp_dir().join(format!(
         "cyberfeed-indicators-{}-{}.txt",
         std::process::id(),
-        std::thread::current().name().unwrap_or("test")
+        test_thread_name()
     ));
     fs::write(
             &path,
@@ -111,7 +126,7 @@ fn skips_non_text_file_contents() {
     let path = std::env::temp_dir().join(format!(
         "cyberfeed-binary-{}-{}.bin",
         std::process::id(),
-        std::thread::current().name().unwrap_or("test")
+        test_thread_name()
     ));
     fs::write(&path, [0xff, 0xfe, 0xfd]).expect("test file should be writable");
 
@@ -207,6 +222,19 @@ fn file_uri_decoder_rejects_remote_authorities() {
     assert_eq!(
         decode_file_uri("file://localhost/tmp/evidence"),
         Some(std::path::PathBuf::from("/tmp/evidence"))
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn file_uri_decoder_accepts_windows_drive_paths() {
+    assert_eq!(
+        decode_file_uri("file:///C:/Users/Analyst/evidence%20sample.txt"),
+        Some(PathBuf::from("C:/Users/Analyst/evidence sample.txt"))
+    );
+    assert_eq!(
+        decode_file_uri("file://localhost/C:/Users/Analyst/evidence.txt"),
+        Some(PathBuf::from("C:/Users/Analyst/evidence.txt"))
     );
 }
 

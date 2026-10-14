@@ -12,6 +12,8 @@ enum DrawOp {
     Close,
     Divider,
     Line(String),
+    Note(String),
+    Footer(String, String),
     Center(String),
     MenuItem(String, String, String),
     Field(String, String),
@@ -24,7 +26,7 @@ thread_local! {
     static SCREEN_ROWS: RefCell<usize> = const { RefCell::new(0) };
 }
 
-pub const INNER_WIDTH: usize = 112;
+pub const INNER_WIDTH: usize = 96;
 const FIELD_LABEL_WIDTH: usize = 11;
 const FIELD_PREFIX_WIDTH: usize = 2;
 const FIELD_SEPARATOR_WIDTH: usize = 3;
@@ -36,9 +38,10 @@ const INDICATOR_PREFIX_WIDTH: usize = 16;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
+const PRIMARY: &str = "\x1b[97m";
 const MUTED: &str = "\x1b[37m";
 const ACCENT: &str = "\x1b[1;36m";
-const SECONDARY: &str = "\x1b[1;94m";
+const SECONDARY: &str = ACCENT;
 const SUCCESS: &str = "\x1b[1;32m";
 const WARNING: &str = "\x1b[1;33m";
 const ERROR: &str = "\x1b[1;31m";
@@ -102,9 +105,9 @@ pub fn header(title: &str, subtitle: &str) {
     let subtitle = sanitize_terminal_text(subtitle);
     open_box();
     if title == "CYBERFEED" {
-        centered_box_line(&format!("{ACCENT}>_{RESET} {BOLD}CYBERFEED{RESET}"));
+        centered_box_line(&format!("{ACCENT}>_ {PRIMARY}{BOLD}CYBERFEED{RESET}"));
     } else {
-        centered_box_line(&format!("{ACCENT}>_{RESET} {MUTED}CYBERFEED{RESET}"));
+        centered_box_line(&format!("{ACCENT}>_ {MUTED}CYBERFEED{RESET}"));
         centered_box_line(&format!("{BOLD}{ACCENT}{title}{RESET}"));
     }
     centered_box_line(&format!("{MUTED}{subtitle}{RESET}"));
@@ -125,6 +128,11 @@ pub fn divider() {
 
 pub fn box_line(text: &str) {
     draw(DrawOp::Line(text.to_owned()));
+}
+
+/// A secondary explanatory line aligned to the shared content inset.
+pub fn note(text: &str) {
+    draw(DrawOp::Note(sanitize_terminal_text(text)));
 }
 
 pub fn centered_box_line(text: &str) {
@@ -159,37 +167,65 @@ fn render_op_lines(op: &DrawOp, columns: usize) -> Vec<String> {
             " ".repeat(margin),
             "═".repeat(width)
         )],
-        DrawOp::Line(text) | DrawOp::Center(text) => wrap_text(text, width.max(1))
-            .into_iter()
-            .map(|line| {
-                if width == 0 {
-                    line
-                } else if matches!(op, DrawOp::Line(_)) {
-                    let padding = width.saturating_sub(visible_width(&line));
-                    format!(
-                        "{}{BORDER}║{RESET}{line}{:width$}{BORDER}║{RESET}",
-                        " ".repeat(margin),
-                        "",
-                        width = padding
+        DrawOp::Line(text) | DrawOp::Center(text) => {
+            let text = if colors_enabled() {
+                text.clone()
+            } else {
+                strip_ansi_sgr(text)
+            };
+            wrap_text(&text, width.max(1))
+                .into_iter()
+                .map(|line| {
+                    if width == 0 {
+                        line
+                    } else if matches!(op, DrawOp::Line(_)) {
+                        let padding = width.saturating_sub(visible_width(&line));
+                        format!(
+                            "{}{BORDER}║{RESET}{line}{:width$}{BORDER}║{RESET}",
+                            " ".repeat(margin),
+                            "",
+                            width = padding
+                        )
+                    } else {
+                        let padding = width.saturating_sub(visible_width(&line));
+                        let left = padding / 2;
+                        let right = padding - left;
+                        format!(
+                            "{}{BORDER}║{RESET}{}{}{}{BORDER}║{RESET}",
+                            " ".repeat(margin),
+                            " ".repeat(left),
+                            line,
+                            " ".repeat(right)
+                        )
+                    }
+                })
+                .collect()
+        }
+        DrawOp::Note(text) => {
+            let indent_width = if width >= 4 { 2 } else { 0 };
+            let indent = " ".repeat(indent_width);
+            wrap_text(text, width.saturating_sub(indent_width).max(1))
+                .into_iter()
+                .flat_map(|line| {
+                    render_op_lines(
+                        &DrawOp::Line(format!("{indent}{MUTED}{line}{RESET}")),
+                        columns,
                     )
-                } else {
-                    let padding = width.saturating_sub(visible_width(&line));
-                    let left = padding / 2;
-                    let right = padding - left;
-                    format!(
-                        "{}{BORDER}║{RESET}{}{}{}{BORDER}║{RESET}",
-                        " ".repeat(margin),
-                        " ".repeat(left),
-                        line,
-                        " ".repeat(right)
-                    )
-                }
-            })
-            .collect(),
+                })
+                .collect()
+        }
+        DrawOp::Footer(key, action) => {
+            let text = format!("  {ACCENT}[{key}]{RESET}  {MUTED}{action}{RESET}");
+            render_op_lines(&DrawOp::Line(text), columns)
+        }
         DrawOp::MenuItem(number, title, description) => {
-            let indent = "      ";
+            // Align description text directly beneath the menu label.
+            let indent = "       ";
             let description_width = width.saturating_sub(indent.len()).max(1);
-            let mut content = vec![format!("  {} {BOLD}{title}{RESET}", menu_key(number))];
+            let mut content = vec![format!(
+                "  {} {PRIMARY}{BOLD}{title}{RESET}",
+                menu_key(number)
+            )];
             content.extend(
                 wrap_text(description, description_width)
                     .into_iter()
@@ -209,9 +245,9 @@ fn render_op_lines(op: &DrawOp, columns: usize) -> Vec<String> {
                 .enumerate()
                 .flat_map(|(index, line)| {
                     let text = if index == 0 {
-                        format!("  {label:<FIELD_LABEL_WIDTH$} : {line}")
+                        format!("  {MUTED}{label:<FIELD_LABEL_WIDTH$}{RESET} : {line}")
                     } else {
-                        format!("  {:<FIELD_LABEL_WIDTH$}   {line}", "")
+                        format!("  {MUTED}{:<FIELD_LABEL_WIDTH$}{RESET}   {line}", "")
                     };
                     render_op_lines(&DrawOp::Line(text), columns)
                 })
@@ -294,21 +330,64 @@ fn render_screen_lines_for_rows(ops: &[DrawOp], columns: usize, max_rows: usize)
         .flat_map(|operation| {
             let is_blank = matches!(operation, DrawOp::Line(text) if text.trim().is_empty());
             let is_close = matches!(operation, DrawOp::Close);
+            let is_note = matches!(operation, DrawOp::Note(_));
+            let is_footer = matches!(operation, DrawOp::Footer(_, _));
+            let is_structure = matches!(
+                operation,
+                DrawOp::Open | DrawOp::Close | DrawOp::Divider | DrawOp::Center(_)
+            );
             render_op_lines(operation, columns)
                 .into_iter()
-                .map(move |line| (line, is_blank, is_close))
+                .map(move |line| (line, is_blank, is_close, is_note, is_footer, is_structure))
         })
         .collect::<Vec<_>>();
 
     while lines.len() > max_rows {
-        if let Some(blank) = lines.iter().position(|(_, is_blank, _)| *is_blank) {
+        if let Some(blank) = lines.iter().position(|(_, is_blank, _, _, _, _)| *is_blank) {
             lines.remove(blank);
+            continue;
+        }
+
+        // Optional explanatory notes are the first content compacted away.
+        if let Some(note) = lines.iter().position(|(_, _, _, is_note, _, _)| *is_note) {
+            lines.remove(note);
             continue;
         }
 
         if max_rows == 0 {
             lines.clear();
-        } else if let Some(close_index) = lines.iter().rposition(|(_, _, is_close)| *is_close) {
+        } else if let Some(footer_index) = lines
+            .iter()
+            .position(|(_, _, _, _, is_footer, _)| *is_footer)
+        {
+            if let Some(content_index) = (0..footer_index).rev().find(|index| {
+                let (_, _, is_close, _, _, is_structure) = &lines[*index];
+                !*is_close && !*is_structure
+            }) {
+                lines.remove(content_index);
+            } else {
+                // When only the frame and footer remain, retain the footer and
+                // closing border while compacting decorative dividers first.
+                if let Some(divider) = lines
+                    .iter()
+                    .position(|(line, _, _, _, _, _)| line.contains('╠'))
+                {
+                    lines.remove(divider);
+                } else if let Some(close_index) = lines
+                    .iter()
+                    .rposition(|(_, _, is_close, _, _, _)| *is_close)
+                {
+                    let close = lines.remove(close_index);
+                    lines.truncate(max_rows.saturating_sub(1));
+                    lines.push(close);
+                } else {
+                    lines.truncate(max_rows);
+                }
+            }
+        } else if let Some(close_index) = lines
+            .iter()
+            .rposition(|(_, _, is_close, _, _, _)| *is_close)
+        {
             let close = lines.remove(close_index);
             lines.truncate(max_rows.saturating_sub(1));
             lines.push(close);
@@ -316,7 +395,10 @@ fn render_screen_lines_for_rows(ops: &[DrawOp], columns: usize, max_rows: usize)
             lines.truncate(max_rows);
         }
     }
-    lines.into_iter().map(|(line, _, _)| line).collect()
+    lines
+        .into_iter()
+        .map(|(line, _, _, _, _, _)| line)
+        .collect()
 }
 
 fn write_lines_at(lines: &[String], start_row: usize) {
@@ -368,8 +450,10 @@ pub(crate) fn recorded_line_texts() -> Vec<String> {
             .borrow()
             .iter()
             .filter_map(|op| match op {
-                DrawOp::Line(text) | DrawOp::Center(text) => Some(text.clone()),
-                DrawOp::Open | DrawOp::Close | DrawOp::Divider => None,
+                DrawOp::Line(text) | DrawOp::Center(text) | DrawOp::Note(text) => {
+                    Some(text.clone())
+                }
+                DrawOp::Open | DrawOp::Close | DrawOp::Divider | DrawOp::Footer(_, _) => None,
                 DrawOp::MenuItem(number, title, description) => {
                     Some(format!("[{number}] {title} {description}"))
                 }
@@ -451,7 +535,10 @@ pub fn indicator_details(indicator_type: &str, indicator_value: &str) {
 pub fn navigation_footer(key: &str, action: &str) {
     box_line("");
     divider();
-    box_line(&format!("  {ACCENT}[{key}]{RESET}  {MUTED}{action}{RESET}"));
+    draw(DrawOp::Footer(
+        sanitize_terminal_text(key),
+        sanitize_terminal_text(action),
+    ));
 }
 
 pub fn align_prompt(prompt: &str) -> String {
@@ -559,6 +646,47 @@ fn geometry_for_columns(columns: u16) -> (usize, usize) {
 
 fn width_for_columns(columns: u16) -> usize {
     usize::from(columns).saturating_sub(2).clamp(1, INNER_WIDTH)
+}
+
+fn colors_enabled() -> bool {
+    colors_enabled_for(
+        std::env::var_os("NO_COLOR").is_some(),
+        std::env::var("TERM").ok().as_deref(),
+    )
+}
+
+fn colors_enabled_for(no_color: bool, term: Option<&str>) -> bool {
+    !no_color && term != Some("dumb")
+}
+
+fn strip_ansi_sgr(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            let mut sequence = String::new();
+            let mut is_sgr = false;
+            for code in chars.by_ref() {
+                if code == 'm' {
+                    is_sgr = true;
+                    break;
+                }
+                sequence.push(code);
+                if !code.is_ascii_digit() && code != ';' {
+                    break;
+                }
+            }
+            if !is_sgr {
+                output.push('\x1b');
+                output.push('[');
+                output.push_str(&sequence);
+            }
+        } else {
+            output.push(character);
+        }
+    }
+    output
 }
 
 pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
