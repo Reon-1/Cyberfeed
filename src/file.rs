@@ -95,20 +95,42 @@ fn decode_terminal_escapes(input: &str) -> String {
 
 fn decode_file_uri(input: &str) -> Option<PathBuf> {
     let path = input.strip_prefix("file://")?;
-    // A local file URI may include an explicit localhost authority.
+    // Accept the slash-rooted local form and localhost authority everywhere.
+    // Windows drag-and-drop also emits `file://C:\\...`, so accept that
+    // explicit drive form only on Windows. Other authorities stay rejected.
+    #[cfg(windows)]
+    let path = {
+        let bytes = path.as_bytes();
+        let is_drive_path = bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'/' | b'\\');
+        if is_drive_path {
+            path.to_owned()
+        } else if let Some(rest) = path.strip_prefix("localhost/") {
+            format!("/{rest}")
+        } else if path.starts_with('/') {
+            path.to_owned()
+        } else {
+            return None;
+        }
+    };
+    #[cfg(not(windows))]
     let path = if let Some(rest) = path.strip_prefix("localhost/") {
         format!("/{rest}")
     } else if path.starts_with('/') {
         path.to_owned()
     } else {
-        // Do not reinterpret a remote URI authority as a relative local path.
         return None;
     };
     let bytes = path.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return None;
+            }
             let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok()?;
             decoded.push(u8::from_str_radix(hex, 16).ok()?);
             index += 3;
@@ -119,29 +141,34 @@ fn decode_file_uri(input: &str) -> Option<PathBuf> {
     }
     let path = String::from_utf8(decoded).ok()?;
     #[cfg(windows)]
-    let path = path
-        .strip_prefix('/')
-        .filter(|path| {
-            let bytes = path.as_bytes();
-            bytes.len() >= 3
-                && bytes[0].is_ascii_alphabetic()
-                && bytes[1] == b':'
-                && bytes[2] == b'/'
-        })
-        .unwrap_or(&path);
+    let path = {
+        let path = path.replace('\\', "/");
+        let path = path
+            .strip_prefix('/')
+            .filter(|path| {
+                let bytes = path.as_bytes();
+                bytes.len() >= 3
+                    && bytes[0].is_ascii_alphabetic()
+                    && bytes[1] == b':'
+                    && bytes[2] == b'/'
+            })
+            .unwrap_or(&path)
+            .to_owned();
+        return Some(PathBuf::from(path));
+    };
     Some(PathBuf::from(path))
 }
 
 pub fn inspect_file(path: &Path) -> Result<FileInspection, String> {
-    let file = File::open(path)
+    let metadata = std::fs::metadata(path)
         .map_err(|error| format!("Could not open '{}': {error}", path.display()))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("Could not inspect '{}': {error}", path.display()))?;
 
     if !metadata.is_file() {
         return Err(format!("'{}' is not a regular file.", path.display()));
     }
+
+    let file = File::open(path)
+        .map_err(|error| format!("Could not open '{}': {error}", path.display()))?;
 
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();

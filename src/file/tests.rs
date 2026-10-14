@@ -215,6 +215,9 @@ fn normalizes_typed_and_dragged_paths_without_shell_processing() {
 #[test]
 fn file_uri_decoder_rejects_remote_authorities() {
     assert!(decode_file_uri("file://example.test/tmp/evidence").is_none());
+    assert!(decode_file_uri("file://C:relative/path").is_none());
+    assert!(decode_file_uri("file://localhost/%GG").is_none());
+    assert!(decode_file_uri("file:///tmp/bad%2").is_none());
     assert_eq!(
         decode_file_uri("file:///tmp/evidence"),
         Some(std::path::PathBuf::from("/tmp/evidence"))
@@ -235,6 +238,10 @@ fn file_uri_decoder_accepts_windows_drive_paths() {
     assert_eq!(
         decode_file_uri("file://localhost/C:/Users/Analyst/evidence.txt"),
         Some(PathBuf::from("C:/Users/Analyst/evidence.txt"))
+    );
+    assert_eq!(
+        decode_file_uri("file://C:\\Users\\Analyst\\evidence%20sample.txt"),
+        Some(PathBuf::from("C:/Users/Analyst/evidence sample.txt"))
     );
 }
 
