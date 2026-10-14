@@ -6,7 +6,7 @@ mod storage;
 
 pub use model::*;
 pub use stix::{save_stix_bundle, stix_indicator_count};
-pub use storage::save_report;
+pub use storage::{save_indicator_report, save_report, save_session_report};
 
 #[cfg(test)]
 mod tests {
@@ -493,5 +493,60 @@ mod tests {
         let markdown = loaded.to_markdown();
         assert!(markdown.contains("Example family"));
         assert!(markdown.contains("ThreatFox returned matching IOC records"));
+    }
+
+    #[test]
+    fn markdown_keeps_urlhaus_associated_evidence_and_omits_empty_metadata() {
+        let file = FileInfo {
+            name: "evidence".into(),
+            size: 1,
+            sha256: "subject".into(),
+        };
+        let report = InvestigationReport::new(
+            &file,
+            vec![],
+            None,
+            vec![ProviderLookup {
+                provider: "URLhaus".into(),
+                subject: LookupSubject::ExtractedIndicator,
+                queried_hash: "example.test".into(),
+                retrieved_at_unix_seconds: Some(5),
+                outcome: LookupOutcome::UrlhausFound {
+                    details: UrlhausLookupDetails {
+                        reference: Some("  ".into()),
+                        queried_host: None,
+                        associated_url_count: None,
+                        md5_hash: None,
+                        sha256_hash: None,
+                        file_type: None,
+                        first_seen: None,
+                        last_seen: None,
+                        signature: None,
+                        associated_urls: vec![UrlhausUrlRecord {
+                            reference: None,
+                            url: "https://example.test/path".into(),
+                            status: Some("online".into()),
+                            host: Some("example.test".into()),
+                            date_added: Some("2026-01-02".into()),
+                            first_seen: Some("2026-01-03".into()),
+                            last_seen: Some("2026-01-04".into()),
+                            threat: Some("malware_download".into()),
+                            tags: vec!["".into(), "  ".into()],
+                        }],
+                    },
+                },
+            }],
+        );
+
+        let markdown = report.to_markdown();
+        assert!(markdown.contains("Associated URL records: 1"));
+        assert!(markdown.contains("Host: example.test"));
+        assert!(markdown.contains("Threat: malware\\_download"));
+        assert!(markdown.contains("Date added: 2026-01-02"));
+        assert_eq!(markdown.matches("Date added: 2026-01-02").count(), 1);
+        assert!(markdown.contains("First seen: 2026-01-03"));
+        assert!(markdown.contains("Last seen: 2026-01-04"));
+        assert!(!markdown.contains("Tags:"));
+        assert!(!markdown.contains("URLhaus reference: \n"));
     }
 }

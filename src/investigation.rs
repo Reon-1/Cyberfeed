@@ -1,16 +1,16 @@
 use crate::indicator::{Indicator, IndicatorType};
-use crate::report::ProviderLookup;
+use crate::report::{InvestigationReport, ProviderLookup, SessionCheck, SessionReport};
 use crate::ui;
 use std::collections::HashSet;
 
-/// Indicators and provider observations collected during the current CLI run.
-///
-/// These observations stay in memory; exported file reports keep their own
-/// file-scoped snapshot so unrelated manual indicators are not mixed in.
+/// Indicators, provider observations, and completed checks from this CLI run.
+/// File reports remain scoped to one file; session reports retain each
+/// completed file or independent indicator check as a separate entry.
 pub struct Investigation {
     indicators: Vec<Indicator>,
     seen: HashSet<Indicator>,
     provider_lookups: Vec<ProviderLookup>,
+    checks: Vec<SessionCheck>,
 }
 
 impl Investigation {
@@ -20,6 +20,7 @@ impl Investigation {
             indicators: Vec::new(),
             seen: HashSet::new(),
             provider_lookups: Vec::new(),
+            checks: Vec::new(),
         }
     }
 
@@ -58,12 +59,40 @@ impl Investigation {
         }
     }
 
-    pub fn add_provider_lookup(&mut self, lookup: ProviderLookup) {
-        self.provider_lookups.push(lookup);
-    }
-
     pub fn provider_lookups(&self) -> &[ProviderLookup] {
         &self.provider_lookups
+    }
+
+    pub fn add_file_investigation(&mut self, report: &InvestigationReport) {
+        self.add_indicator(report.file.sha256.clone(), IndicatorType::Hash);
+        self.add_indicators(report.local_inspection.indicators.clone());
+        self.provider_lookups
+            .extend(report.provider_lookups.iter().cloned());
+        self.checks.push(SessionCheck::FileInvestigation {
+            report: Box::new(report.clone()),
+        });
+    }
+
+    pub fn add_indicator_lookup(
+        &mut self,
+        indicator: Indicator,
+        provider_lookups: &[ProviderLookup],
+    ) {
+        self.add_indicator(indicator.value.clone(), indicator.indicator_type);
+        self.provider_lookups
+            .extend(provider_lookups.iter().cloned());
+        self.checks.push(SessionCheck::IndicatorLookup {
+            indicator,
+            provider_lookups: provider_lookups.to_vec(),
+        });
+    }
+
+    pub fn session_report(&self) -> SessionReport {
+        SessionReport::new(self.checks.clone())
+    }
+
+    pub fn has_completed_checks(&self) -> bool {
+        !self.checks.is_empty()
     }
 }
 

@@ -1,6 +1,60 @@
 use super::model::{
-    InvestigationReport, LookupOutcome, LookupSubject, ProviderLookup, TextExtraction,
+    InvestigationReport, LookupOutcome, LookupSubject, ProviderLookup, SessionCheck, SessionReport,
+    TextExtraction,
 };
+
+impl SessionReport {
+    pub fn to_markdown(&self) -> String {
+        let mut out = format!(
+            "# CyberFeed Session Report\n\n- Completed checks: {}\n- Generated at: {} seconds since the Unix epoch (UTC)\n\n",
+            self.checks.len(),
+            self.generated_at_unix_seconds
+        );
+        out.push_str("`FOUND` means a provider returned a matching record. `NOT FOUND` means that provider returned no match at lookup time; it is not a safety verdict. Errors, unsupported checks, and missing configuration remain distinct.\n\n");
+        for (index, check) in self.checks.iter().enumerate() {
+            match check {
+                SessionCheck::FileInvestigation { report } => {
+                    out.push_str(&format!(
+                        "## Check {} — File investigation: `{}`\n\n",
+                        index + 1,
+                        md_code(&report.file.filename)
+                    ));
+                    let markdown = report.to_markdown();
+                    let body = markdown
+                        .strip_prefix("# CyberFeed Investigation Report\n\n")
+                        .unwrap_or(&markdown);
+                    for line in body.lines() {
+                        if line.starts_with('#') {
+                            out.push_str("##");
+                        }
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                    out.push('\n');
+                }
+                SessionCheck::IndicatorLookup {
+                    indicator,
+                    provider_lookups,
+                } => {
+                    out.push_str(&format!(
+                        "## Check {} — Indicator lookup\n\n- Type: {}\n- Value: `{}`\n\n",
+                        index + 1,
+                        indicator.indicator_type.as_str(),
+                        md_code(&indicator.value)
+                    ));
+                    if provider_lookups.is_empty() {
+                        out.push_str("No provider outcomes were recorded for this check.\n\n");
+                    }
+                    for lookup in provider_lookups {
+                        render_lookup(&mut out, lookup);
+                    }
+                    out.push_str("This lookup describes the submitted indicator and does not establish that a file or related system is safe or malicious.\n\n");
+                }
+            }
+        }
+        out
+    }
+}
 
 impl InvestigationReport {
     pub fn to_markdown(&self) -> String {
@@ -96,7 +150,7 @@ fn render_lookup(out: &mut String, lookup: &ProviderLookup) {
         ));
     }
     match &lookup.outcome {
-            LookupOutcome::Found(m) => out.push_str(&format!("- Matched SHA-256: `{}`\n- First seen: {}\n- File type: {}\n- Sample filename: {}\n- Signature: {}\n\n", md_code(&m.matched_sha256), md_plain(&m.first_seen), md_plain(&m.file_type), m.sample_filename.as_deref().map(md_plain).unwrap_or_else(|| "Not provided".into()), m.signature.as_deref().map(md_plain).unwrap_or_else(|| "Not provided".into()))),
+            LookupOutcome::Found(m) => out.push_str(&format!("- Matched SHA-256: `{}`\n- First seen: {}\n- File type: {}\n- Sample filename: {}\n- Signature: {}\n\n", md_code(&m.matched_sha256), md_plain(&m.first_seen), md_plain(&m.file_type), optional_display(m.sample_filename.as_deref()), optional_display(m.signature.as_deref()))),
             LookupOutcome::Invalid { explanation } | LookupOutcome::ApiError { explanation } | LookupOutcome::RequestError { explanation } => out.push_str(&format!("{}\n\n", md_plain(explanation))),
             LookupOutcome::SkippedDuplicate { references_hash } => out.push_str(&format!("Reuses the earlier result for `{}`; no second request was made.\n\n", md_code(references_hash))),
                 LookupOutcome::NotFound => {
@@ -109,6 +163,9 @@ fn render_lookup(out: &mut String, lookup: &ProviderLookup) {
             LookupOutcome::Unsupported { explanation } => out.push_str(&format!("Lookup unsupported: {}\n\n", md_plain(explanation))),
             LookupOutcome::ThreatFoxFound { findings } => {
                 out.push_str("ThreatFox returned matching IOC records. A record is an observation, not a verdict about the original file.\n\n");
+                if findings.is_empty() {
+                    out.push_str("No IOC record details were recorded for this result.\n\n");
+                }
                 for finding in findings {
                     out.push_str(&format!("#### IOC `{}` ({})\n\n", md_code(&finding.ioc), md_plain(&finding.ioc_type)));
                     let confidence = finding.confidence_level.map(|value| value.to_string());
@@ -125,14 +182,21 @@ fn render_lookup(out: &mut String, lookup: &ProviderLookup) {
                         ("Reporter", finding.reporter.as_deref()),
                         ("Source record ID", finding.source_record_id.as_deref()),
                     ] {
-                        if let Some(value) = value { out.push_str(&format!("- {}: {}\n", label, md_plain(value))); }
+                        if let Some(value) = nonempty(value) { out.push_str(&format!("- {}: {}\n", label, md_plain(value.trim()))); }
                     }
-                    if !finding.tags.is_empty() { out.push_str(&format!("- Tags: {}\n", finding.tags.iter().map(|tag| md_plain(tag)).collect::<Vec<_>>().join(", "))); }
+                    let tags = finding.tags.iter().map(|tag| tag.trim()).filter(|tag| !tag.is_empty()).map(md_plain).collect::<Vec<_>>();
+                    if !tags.is_empty() { out.push_str(&format!("- Tags: {}\n", tags.join(", "))); }
                     out.push('\n');
                 }
             }
             LookupOutcome::UrlhausFound { details } => {
-                out.push_str(&format!("URLhaus reference: {}\nAssociated URL records: {}\n", details.reference.as_deref().map(md_plain).unwrap_or_else(|| "Not provided".into()), details.associated_url_count.map_or_else(|| "Not provided".into(), |count| count.to_string())));
+                let reference = nonempty(details.reference.as_deref())
+                    .map(|value| md_plain(value.trim()))
+                    .unwrap_or_else(|| "Not provided".into());
+                let associated_count = details.associated_url_count.or_else(|| {
+                    (!details.associated_urls.is_empty()).then_some(details.associated_urls.len())
+                });
+                out.push_str(&format!("URLhaus reference: {reference}\nAssociated URL records: {}\n", associated_count.map_or_else(|| "Not provided".into(), |count| count.to_string())));
                 for (label, value) in [
                     ("Queried host", details.queried_host.as_deref()),
                     ("Payload MD5", details.md5_hash.as_deref()),
@@ -142,15 +206,38 @@ fn render_lookup(out: &mut String, lookup: &ProviderLookup) {
                     ("Last seen", details.last_seen.as_deref()),
                     ("Signature", details.signature.as_deref()),
                 ] {
-                    if let Some(value) = value { out.push_str(&format!("- {label}: {}\n", md_plain(value))); }
+                    if let Some(value) = nonempty(value) { out.push_str(&format!("- {label}: {}\n", md_plain(value.trim()))); }
                 }
                 for record in &details.associated_urls {
-                    out.push_str(&format!("- URL: `{}` · status: {} · reference: {}\n", md_code(&record.url), md_plain(record.status.as_deref().unwrap_or("Not provided")), md_plain(record.reference.as_deref().unwrap_or("Not provided"))));
-                    if !record.tags.is_empty() { out.push_str(&format!("  - Tags: {}\n", record.tags.iter().map(|tag| md_plain(tag)).collect::<Vec<_>>().join(", "))); }
+                    let url = nonempty(Some(&record.url)).map(str::trim).unwrap_or("Not provided");
+                    let status = optional_display(record.status.as_deref());
+                    let reference = optional_display(record.reference.as_deref());
+                    out.push_str(&format!("- URL: `{}` · status: {status} · reference: {reference}\n", md_code(url)));
+                    for (label, value) in [
+                        ("Host", record.host.as_deref()),
+                        ("Threat", record.threat.as_deref()),
+                        ("Date added", record.date_added.as_deref()),
+                        ("First seen", record.first_seen.as_deref()),
+                        ("Last seen", record.last_seen.as_deref()),
+                    ] {
+                        if let Some(value) = nonempty(value) { out.push_str(&format!("  - {label}: {}\n", md_plain(value.trim()))); }
+                    }
+                    let tags = record.tags.iter().map(|tag| tag.trim()).filter(|tag| !tag.is_empty()).map(md_plain).collect::<Vec<_>>();
+                    if !tags.is_empty() { out.push_str(&format!("  - Tags: {}\n", tags.join(", "))); }
                 }
                 out.push('\n');
             }
         }
+}
+
+fn nonempty(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.trim().is_empty())
+}
+
+fn optional_display(value: Option<&str>) -> String {
+    nonempty(value)
+        .map(|value| md_plain(value.trim()))
+        .unwrap_or_else(|| "Not provided".into())
 }
 
 fn md_code(s: &str) -> String {

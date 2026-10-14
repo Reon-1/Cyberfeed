@@ -1,5 +1,7 @@
 //! Read-only discovery and schema validation for saved JSON reports.
-use crate::report::{InvestigationReport, SCHEMA_VERSION};
+use crate::report::{
+    InvestigationReport, MAX_SAVED_REPORT_BYTES, SCHEMA_VERSION, SESSION_REPORT_TYPE, SessionReport,
+};
 use serde_json::Value;
 use std::fs;
 use std::io::{self, Read};
@@ -7,18 +9,41 @@ use std::path::{Path, PathBuf};
 
 pub(super) struct SavedReport {
     pub(super) path: PathBuf,
-    pub(super) report: InvestigationReport,
+    pub(super) contents: SavedReportContents,
+}
+
+pub(super) enum SavedReportContents {
+    File(Box<InvestigationReport>),
+    Session(SessionReport),
+}
+
+impl SavedReportContents {
+    pub(super) fn generated_at_unix_seconds(&self) -> u64 {
+        match self {
+            Self::File(report) => report.generated_at_unix_seconds,
+            Self::Session(report) => report.generated_at_unix_seconds,
+        }
+    }
+
+    pub(super) fn file_report(&self) -> Option<&InvestigationReport> {
+        match self {
+            Self::File(report) => Some(report.as_ref()),
+            Self::Session(_) => None,
+        }
+    }
+
+    pub(super) fn to_markdown(&self) -> String {
+        match self {
+            Self::File(report) => report.to_markdown(),
+            Self::Session(report) => report.to_markdown(),
+        }
+    }
 }
 
 pub(super) struct ReportCollection {
     pub(super) reports: Vec<SavedReport>,
     pub(super) unavailable: Vec<String>,
 }
-
-/// Maximum serialized saved-report size. The 10,000-indicator extraction cap
-/// keeps ordinary reports small; 32 MiB leaves ample room for provider data
-/// while bounding memory use when opening an untrusted report.
-const MAX_SAVED_REPORT_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Directory errors are separate from per-file errors so one damaged report
 /// does not prevent valid neighboring reports from loading.
@@ -51,7 +76,7 @@ pub(super) fn discover(directory: &Path) -> io::Result<ReportCollection> {
             }
         }
         match load_one(&path) {
-            Ok(report) => collection.reports.push(SavedReport { path, report }),
+            Ok(contents) => collection.reports.push(SavedReport { path, contents }),
             Err(error) => collection
                 .unavailable
                 .push(format!("{}: {error}", path.display())),
@@ -59,14 +84,14 @@ pub(super) fn discover(directory: &Path) -> io::Result<ReportCollection> {
     }
     collection.reports.sort_by(|left, right| {
         right
-            .report
-            .generated_at_unix_seconds
-            .cmp(&left.report.generated_at_unix_seconds)
+            .contents
+            .generated_at_unix_seconds()
+            .cmp(&left.contents.generated_at_unix_seconds())
     });
     Ok(collection)
 }
 
-fn load_one(path: &Path) -> Result<InvestigationReport, String> {
+fn load_one(path: &Path) -> Result<SavedReportContents, String> {
     let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
     if file.metadata().map_err(|error| error.to_string())?.len() > MAX_SAVED_REPORT_BYTES {
         return Err("report exceeds the 32 MiB saved-report size limit".into());
@@ -91,6 +116,18 @@ fn load_one(path: &Path) -> Result<InvestigationReport, String> {
             "unsupported schema version {version}; this application supports {SCHEMA_VERSION}"
         ));
     }
+    let is_session = value.get("report_type").and_then(Value::as_str) == Some(SESSION_REPORT_TYPE);
+    if is_session {
+        let mut report: SessionReport =
+            serde_json::from_value(value).map_err(|error| error.to_string())?;
+        if report.checks.is_empty() {
+            return Err("session report contains no completed checks".into());
+        }
+        if version < u64::from(SCHEMA_VERSION) {
+            report.schema_version = SCHEMA_VERSION;
+        }
+        return Ok(SavedReportContents::Session(report));
+    }
     let mut report: InvestigationReport =
         serde_json::from_value(value).map_err(|error| error.to_string())?;
     // Earlier report schemas remain readable; the in-memory model uses the
@@ -98,7 +135,7 @@ fn load_one(path: &Path) -> Result<InvestigationReport, String> {
     if version < u64::from(SCHEMA_VERSION) {
         report.schema_version = SCHEMA_VERSION;
     }
-    Ok(report)
+    Ok(SavedReportContents::File(Box::new(report)))
 }
 
 #[cfg(test)]
@@ -106,7 +143,8 @@ mod tests {
     use super::*;
     use crate::file::FileInfo;
     use crate::indicator::Indicator;
-    use crate::report::{LookupOutcome, LookupSubject, ProviderLookup};
+    use crate::investigation::Investigation;
+    use crate::report::{LookupOutcome, LookupSubject, ProviderLookup, SessionCheck};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
@@ -171,7 +209,7 @@ mod tests {
         let directory = TestDir::new();
         write_report(&directory.0, "report.json", 123);
         let collection = discover(&directory.0).unwrap();
-        let loaded = &collection.reports[0].report;
+        let loaded = collection.reports[0].contents.file_report().unwrap();
         assert_eq!(loaded.file.filename, "evidence.bin");
         assert_eq!(loaded.file.size_bytes, 42);
         assert_eq!(loaded.file.sha256, "file-sha");
@@ -183,13 +221,228 @@ mod tests {
     }
 
     #[test]
+    fn report_saved_by_the_file_workflow_is_discoverable_with_its_evidence() {
+        let directory = TestDir::new();
+        let report = report();
+
+        let (json_path, markdown_path) = crate::report::save_report(&report, &directory.0).unwrap();
+        assert!(json_path.is_file());
+        assert!(markdown_path.is_file());
+
+        let collection = discover(&directory.0).unwrap();
+        assert_eq!(collection.reports.len(), 1);
+        assert!(collection.unavailable.is_empty());
+        let reopened = collection.reports[0].contents.file_report().unwrap();
+        assert_eq!(reopened.file.filename, "evidence.bin");
+        assert_eq!(
+            reopened.local_inspection.indicators[0].value,
+            "example.test"
+        );
+        assert_eq!(reopened.provider_lookups.len(), 1);
+        assert_eq!(reopened.provider_lookups[0].provider, "ExampleProvider");
+        assert_eq!(
+            reopened.provider_lookups[0].outcome,
+            LookupOutcome::NotFound
+        );
+    }
+
+    #[test]
+    fn saved_session_report_reopens_with_file_and_independent_value_checks() {
+        let directory = TestDir::new();
+        let file_report = report();
+        let mut investigation = Investigation::new();
+        investigation.add_file_investigation(&file_report);
+        investigation.add_indicator_lookup(
+            Indicator::new("198.51.100.22", crate::indicator::IndicatorType::IP),
+            &[
+                ProviderLookup {
+                    provider: "MalwareBazaar".into(),
+                    subject: LookupSubject::ExtractedIndicator,
+                    queried_hash: "198.51.100.22".into(),
+                    retrieved_at_unix_seconds: None,
+                    outcome: LookupOutcome::Unsupported {
+                        explanation: "hash lookups only".into(),
+                    },
+                },
+                ProviderLookup {
+                    provider: "ThreatFox".into(),
+                    subject: LookupSubject::ExtractedIndicator,
+                    queried_hash: "198.51.100.22".into(),
+                    retrieved_at_unix_seconds: Some(10),
+                    outcome: LookupOutcome::ApiError {
+                        explanation: "temporary test failure".into(),
+                    },
+                },
+            ],
+        );
+        let session = investigation.session_report();
+
+        let report_dir = directory.0.join("reports");
+        let (json_path, markdown_path) =
+            crate::report::save_session_report(&session, &report_dir).unwrap();
+        let duplicate = crate::report::save_session_report(&session, &report_dir).unwrap();
+        assert_ne!(json_path, duplicate.0);
+        assert_ne!(markdown_path, duplicate.1);
+        assert!(json_path.is_file());
+        let markdown = fs::read_to_string(markdown_path).unwrap();
+        assert!(markdown.contains("File investigation: `evidence.bin`"));
+        assert!(markdown.contains("Indicator lookup"));
+        assert!(markdown.contains("UNSUPPORTED"));
+        assert!(markdown.contains("ERROR"));
+
+        let collection = discover(&report_dir).unwrap();
+        assert_eq!(collection.reports.len(), 2);
+        assert!(collection.unavailable.is_empty());
+        let SavedReportContents::Session(reopened) = &collection.reports[0].contents else {
+            panic!("session JSON must be discovered as a session report");
+        };
+        assert_eq!(reopened.checks.len(), 2);
+        assert!(matches!(
+            &reopened.checks[0],
+            SessionCheck::FileInvestigation { report }
+                if report.file.sha256 == "file-sha"
+                    && report.provider_lookups[0].outcome == LookupOutcome::NotFound
+        ));
+        assert!(matches!(
+            &reopened.checks[1],
+            SessionCheck::IndicatorLookup { indicator, provider_lookups }
+                if indicator.value == "198.51.100.22"
+                    && provider_lookups[0].outcome.status() == "UNSUPPORTED"
+                    && provider_lookups[1].outcome.status() == "API ERROR"
+        ));
+    }
+
+    #[test]
+    fn individually_saved_indicator_check_is_discovered_and_reopened_with_outcomes() {
+        let directory = TestDir::new();
+        let indicator = Indicator::new("198.51.100.44", crate::indicator::IndicatorType::IP);
+        let lookups = vec![
+            ProviderLookup {
+                provider: "MalwareBazaar".into(),
+                subject: LookupSubject::ExtractedIndicator,
+                queried_hash: indicator.value.clone(),
+                retrieved_at_unix_seconds: None,
+                outcome: LookupOutcome::Unsupported {
+                    explanation: "IP lookups are unsupported".into(),
+                },
+            },
+            ProviderLookup {
+                provider: "ThreatFox".into(),
+                subject: LookupSubject::ExtractedIndicator,
+                queried_hash: indicator.value.clone(),
+                retrieved_at_unix_seconds: None,
+                outcome: LookupOutcome::NotConfigured,
+            },
+            ProviderLookup {
+                provider: "URLhaus".into(),
+                subject: LookupSubject::ExtractedIndicator,
+                queried_hash: indicator.value.clone(),
+                retrieved_at_unix_seconds: Some(11),
+                outcome: LookupOutcome::ApiError {
+                    explanation: "temporary provider error".into(),
+                },
+            },
+            ProviderLookup {
+                provider: "ExampleSource".into(),
+                subject: LookupSubject::ExtractedIndicator,
+                queried_hash: indicator.value.clone(),
+                retrieved_at_unix_seconds: Some(12),
+                outcome: LookupOutcome::NotFound,
+            },
+        ];
+        let aggregate = crate::report::SessionReport::new(vec![
+            SessionCheck::IndicatorLookup {
+                indicator: indicator.clone(),
+                provider_lookups: lookups.clone(),
+            },
+            SessionCheck::IndicatorLookup {
+                indicator: Indicator::new("example.test", crate::indicator::IndicatorType::Domain),
+                provider_lookups: vec![],
+            },
+            SessionCheck::IndicatorLookup {
+                indicator: Indicator::new(
+                    "another.example",
+                    crate::indicator::IndicatorType::Domain,
+                ),
+                provider_lookups: vec![],
+            },
+        ]);
+        crate::report::save_session_report(&aggregate, &directory.0).unwrap();
+        let (individual_json, _) =
+            crate::report::save_indicator_report(&indicator, &lookups, &directory.0).unwrap();
+        assert!(
+            individual_json
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("cyberfeed-indicator-IP-198_51_100_44-")
+        );
+
+        let found = discover(&directory.0).unwrap();
+
+        assert_eq!(found.reports.len(), 2);
+        assert!(found.unavailable.is_empty());
+        let individual = found
+            .reports
+            .iter()
+            .find(|saved| saved.path == individual_json)
+            .expect("the individual report must be its own Saved Reports entry");
+        let SavedReportContents::Session(reopened) = &individual.contents else {
+            panic!("the saved indicator check must be recognized as a session report");
+        };
+        assert_eq!(reopened.checks.len(), 1);
+        assert!(matches!(
+            &reopened.checks[0],
+            SessionCheck::IndicatorLookup { indicator, provider_lookups }
+                if indicator.value == "198.51.100.44"
+                    && provider_lookups[0].outcome.status() == "UNSUPPORTED"
+                    && provider_lookups[1].outcome.status() == "NOT CONFIGURED"
+                    && provider_lookups[2].outcome.status() == "API ERROR"
+                    && provider_lookups[3].outcome.status() == "NOT FOUND"
+        ));
+    }
+
+    #[test]
+    fn empty_session_report_is_rejected_without_creating_report_files() {
+        let directory = TestDir::new();
+        let empty = crate::report::SessionReport::new(Vec::new());
+
+        let error = crate::report::save_session_report(&empty, &directory.0).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn session_report_write_failure_is_returned_without_replacing_the_target() {
+        let directory = TestDir::new();
+        let target = directory.0.join("reports-is-a-file");
+        fs::write(&target, b"preserve this file").unwrap();
+        let mut investigation = Investigation::new();
+        investigation.add_indicator_lookup(
+            Indicator::new("example.test", crate::indicator::IndicatorType::Domain),
+            &[],
+        );
+        let session = investigation.session_report();
+
+        assert!(crate::report::save_session_report(&session, &target).is_err());
+        assert_eq!(fs::read(target).unwrap(), b"preserve this file");
+    }
+
+    #[test]
     fn sorts_valid_reports_by_generation_time() {
         let directory = TestDir::new();
         write_report(&directory.0, "z-old.json", 1);
         write_report(&directory.0, "a-new.json", 20);
         let collection = discover(&directory.0).unwrap();
-        assert_eq!(collection.reports[0].report.generated_at_unix_seconds, 20);
-        assert_eq!(collection.reports[1].report.generated_at_unix_seconds, 1);
+        assert_eq!(
+            collection.reports[0].contents.generated_at_unix_seconds(),
+            20
+        );
+        assert_eq!(
+            collection.reports[1].contents.generated_at_unix_seconds(),
+            1
+        );
     }
 
     #[test]
@@ -242,14 +495,12 @@ mod tests {
         fs::write(directory.0.join("legacy.json"), legacy).unwrap();
         let loaded = discover(&directory.0).unwrap();
         assert_eq!(loaded.reports.len(), 1);
-        assert_eq!(loaded.reports[0].report.schema_version, SCHEMA_VERSION);
-        assert_eq!(loaded.reports[0].report.generated_at_unix_seconds, 77);
-        assert_eq!(loaded.reports[0].report.file.sha256, "legacy-sha");
-        assert_eq!(
-            loaded.reports[0].report.local_inspection.indicators[0].value,
-            "legacy.test"
-        );
-        assert_eq!(loaded.reports[0].report.interpretation, ["legacy note"]);
+        let report = loaded.reports[0].contents.file_report().unwrap();
+        assert_eq!(report.schema_version, SCHEMA_VERSION);
+        assert_eq!(report.generated_at_unix_seconds, 77);
+        assert_eq!(report.file.sha256, "legacy-sha");
+        assert_eq!(report.local_inspection.indicators[0].value, "legacy.test");
+        assert_eq!(report.interpretation, ["legacy note"]);
     }
 
     #[test]
@@ -268,16 +519,10 @@ mod tests {
         .unwrap();
         let loaded = discover(&directory.0).unwrap();
         assert_eq!(loaded.reports.len(), 1);
-        assert_eq!(loaded.reports[0].report.schema_version, SCHEMA_VERSION);
-        assert_eq!(loaded.reports[0].report.file.sha256, "file-sha");
-        assert_eq!(
-            loaded.reports[0]
-                .report
-                .summary
-                .extracted_indicator_counts
-                .urls,
-            0
-        );
+        let report = loaded.reports[0].contents.file_report().unwrap();
+        assert_eq!(report.schema_version, SCHEMA_VERSION);
+        assert_eq!(report.file.sha256, "file-sha");
+        assert_eq!(report.summary.extracted_indicator_counts.urls, 0);
     }
 
     #[test]
@@ -291,7 +536,10 @@ mod tests {
         .unwrap();
         let collection = discover(&directory.0).unwrap();
         assert_eq!(collection.reports.len(), 1);
-        assert_eq!(collection.reports[0].report.generated_at_unix_seconds, 1);
+        assert_eq!(
+            collection.reports[0].contents.generated_at_unix_seconds(),
+            1
+        );
         assert!(
             collection
                 .unavailable

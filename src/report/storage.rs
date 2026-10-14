@@ -1,5 +1,9 @@
 //! Local persistence for paired JSON and Markdown report exports.
-use super::model::InvestigationReport;
+use super::model::{
+    InvestigationReport, MAX_SAVED_REPORT_BYTES, ProviderLookup, SessionCheck, SessionReport,
+};
+use crate::indicator::Indicator;
+use serde::Serialize;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
@@ -19,9 +23,70 @@ pub fn save_report(
     report: &InvestigationReport,
     directory: &Path,
 ) -> std::io::Result<(PathBuf, PathBuf)> {
+    save_document(
+        report,
+        &report.file.filename,
+        report.generated_at_unix_seconds,
+        &report.to_markdown(),
+        directory,
+    )
+}
+
+/// Writes a non-empty current-session report using the same paired-file
+/// persistence and collision handling as file-scoped reports.
+pub fn save_session_report(
+    report: &SessionReport,
+    directory: &Path,
+) -> std::io::Result<(PathBuf, PathBuf)> {
+    if report.checks.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "cannot save an empty session report",
+        ));
+    }
+    save_document(
+        report,
+        "session",
+        report.generated_at_unix_seconds,
+        &report.to_markdown(),
+        directory,
+    )
+}
+
+/// Saves one indicator lookup as a separate, discoverable report entry.
+pub fn save_indicator_report(
+    indicator: &Indicator,
+    provider_lookups: &[ProviderLookup],
+    directory: &Path,
+) -> std::io::Result<(PathBuf, PathBuf)> {
+    let report = SessionReport::new(vec![SessionCheck::IndicatorLookup {
+        indicator: indicator.clone(),
+        provider_lookups: provider_lookups.to_vec(),
+    }]);
+    let stem = format!(
+        "indicator-{}-{}",
+        indicator.indicator_type.as_str(),
+        indicator.value.replace('.', "_")
+    );
+    save_document(
+        &report,
+        &stem,
+        report.generated_at_unix_seconds,
+        &report.to_markdown(),
+        directory,
+    )
+}
+
+fn save_document<T: Serialize>(
+    report: &T,
+    filename: &str,
+    generated_at_unix_seconds: u64,
+    markdown_content: &str,
+    directory: &Path,
+) -> std::io::Result<(PathBuf, PathBuf)> {
     fs::create_dir_all(directory)
         .map_err(|error| contextual(error, "create report directory", directory))?;
-    let stem = safe_stem(&report.file.filename);
+    let stem = safe_stem(filename);
     let mut suffix = 0u64;
 
     loop {
@@ -30,12 +95,9 @@ pub fn save_report(
         } else {
             format!("-{suffix}")
         };
-        let base = format!(
-            "cyberfeed-{stem}-{}{extra}",
-            report.generated_at_unix_seconds
-        );
+        let base = format!("cyberfeed-{stem}-{}{extra}", generated_at_unix_seconds);
         let json = directory.join(format!("{base}.json"));
-        let markdown = directory.join(format!("{base}.md"));
+        let markdown_path = directory.join(format!("{base}.md"));
         let (json_temp, json_file) = create_temp_file(directory, &base, "json")
             .map_err(|error| contextual(error, "create staged JSON report in", directory))?;
         let (markdown_temp, markdown_file) = match create_temp_file(directory, &base, "md") {
@@ -49,7 +111,7 @@ pub fn save_report(
             }
         };
 
-        if let Err(error) = write_pair(report, json_file, markdown_file) {
+        if let Err(error) = write_pair(report, markdown_content, json_file, markdown_file) {
             return Err(with_cleanup(
                 contextual(error, "write staged report files in", directory),
                 &[json_temp, markdown_temp],
@@ -73,7 +135,7 @@ pub fn save_report(
             }
         }
 
-        match fs::hard_link(&markdown_temp, &markdown) {
+        match fs::hard_link(&markdown_temp, &markdown_path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 let cleanup_error =
@@ -91,7 +153,7 @@ pub fn save_report(
             }
             Err(error) => {
                 return Err(with_cleanup(
-                    contextual(error, "publish Markdown report to", &markdown),
+                    contextual(error, "publish Markdown report to", &markdown_path),
                     &[json.clone(), json_temp, markdown_temp],
                 ));
             }
@@ -102,10 +164,10 @@ pub fn save_report(
             eprintln!(
                 "Reports saved to '{}' and '{}', but {message}",
                 json.display(),
-                markdown.display()
+                markdown_path.display()
             );
         }
-        return Ok((json, markdown));
+        return Ok((json, markdown_path));
     }
 }
 
@@ -117,15 +179,44 @@ fn contextual(error: std::io::Error, operation: &str, path: &Path) -> std::io::E
 }
 
 fn write_pair(
-    report: &InvestigationReport,
-    mut json_file: File,
+    report: &impl Serialize,
+    markdown: &str,
+    json_file: File,
     mut markdown_file: File,
 ) -> std::io::Result<()> {
-    serde_json::to_writer_pretty(&mut json_file, report).map_err(std::io::Error::other)?;
-    json_file.write_all(b"\n")?;
-    markdown_file.write_all(report.to_markdown().as_bytes())?;
+    let mut bounded_json = BoundedReportWriter {
+        file: json_file,
+        bytes_written: 0,
+    };
+    serde_json::to_writer_pretty(&mut bounded_json, report).map_err(std::io::Error::other)?;
+    bounded_json.write_all(b"\n")?;
+    let json_file = bounded_json.file;
+    markdown_file.write_all(markdown.as_bytes())?;
     json_file.sync_all()?;
     markdown_file.sync_all()
+}
+
+struct BoundedReportWriter {
+    file: File,
+    bytes_written: u64,
+}
+
+impl Write for BoundedReportWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        if self.bytes_written.saturating_add(buffer.len() as u64) > MAX_SAVED_REPORT_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "serialized report exceeds the 32 MiB Saved Reports limit",
+            ));
+        }
+        let written = self.file.write(buffer)?;
+        self.bytes_written += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
 }
 
 fn create_temp_file(

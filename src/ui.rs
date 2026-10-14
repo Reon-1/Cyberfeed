@@ -11,6 +11,7 @@ enum DrawOp {
     Open,
     Close,
     Divider,
+    Spacer,
     Line(String),
     Note(String),
     Footer(String, String),
@@ -126,6 +127,11 @@ pub fn divider() {
     draw(DrawOp::Divider);
 }
 
+/// Draw one empty interior row, retaining the panel borders during compact redraws.
+pub fn spacer() {
+    draw(DrawOp::Spacer);
+}
+
 pub fn box_line(text: &str) {
     draw(DrawOp::Line(text.to_owned()));
 }
@@ -167,6 +173,7 @@ fn render_op_lines(op: &DrawOp, columns: usize) -> Vec<String> {
             " ".repeat(margin),
             "═".repeat(width)
         )],
+        DrawOp::Spacer => render_op_lines(&DrawOp::Line(String::new()), columns),
         DrawOp::Line(text) | DrawOp::Center(text) => {
             let text = if colors_enabled() {
                 text.clone()
@@ -237,17 +244,18 @@ fn render_op_lines(op: &DrawOp, columns: usize) -> Vec<String> {
                 .collect()
         }
         DrawOp::Field(label, value) => {
+            let label_width = FIELD_LABEL_WIDTH.max(visible_width(label));
             let value_width = width
-                .saturating_sub(FIELD_PREFIX_WIDTH + FIELD_LABEL_WIDTH + FIELD_SEPARATOR_WIDTH)
+                .saturating_sub(FIELD_PREFIX_WIDTH + label_width + FIELD_SEPARATOR_WIDTH)
                 .max(1);
             wrap_text(value, value_width)
                 .iter()
                 .enumerate()
                 .flat_map(|(index, line)| {
                     let text = if index == 0 {
-                        format!("  {MUTED}{label:<FIELD_LABEL_WIDTH$}{RESET} : {line}")
+                        format!("  {MUTED}{label:<label_width$}{RESET} : {line}")
                     } else {
-                        format!("  {MUTED}{:<FIELD_LABEL_WIDTH$}{RESET}   {line}", "")
+                        format!("  {MUTED}{:<label_width$}{RESET}   {line}", "")
                     };
                     render_op_lines(&DrawOp::Line(text), columns)
                 })
@@ -334,7 +342,7 @@ fn render_screen_lines_for_rows(ops: &[DrawOp], columns: usize, max_rows: usize)
             let is_footer = matches!(operation, DrawOp::Footer(_, _));
             let is_structure = matches!(
                 operation,
-                DrawOp::Open | DrawOp::Close | DrawOp::Divider | DrawOp::Center(_)
+                DrawOp::Open | DrawOp::Close | DrawOp::Divider | DrawOp::Center(_) | DrawOp::Spacer
             );
             render_op_lines(operation, columns)
                 .into_iter()
@@ -453,7 +461,11 @@ pub(crate) fn recorded_line_texts() -> Vec<String> {
                 DrawOp::Line(text) | DrawOp::Center(text) | DrawOp::Note(text) => {
                     Some(text.clone())
                 }
-                DrawOp::Open | DrawOp::Close | DrawOp::Divider | DrawOp::Footer(_, _) => None,
+                DrawOp::Open
+                | DrawOp::Close
+                | DrawOp::Divider
+                | DrawOp::Spacer
+                | DrawOp::Footer(_, _) => None,
                 DrawOp::MenuItem(number, title, description) => {
                     Some(format!("[{number}] {title} {description}"))
                 }
@@ -462,6 +474,26 @@ pub(crate) fn recorded_line_texts() -> Vec<String> {
                 }
                 DrawOp::IndicatorRow(index, kind, value) => Some(format!("{index} {kind} {value}")),
             })
+            .collect()
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn recorded_rendered_lines(columns: usize) -> Vec<String> {
+    SCREEN.with(|screen| {
+        render_screen_lines(&screen.borrow(), columns)
+            .iter()
+            .map(|line| strip_ansi_sgr(line))
+            .collect()
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn recorded_rendered_lines_for_rows(columns: usize, max_rows: usize) -> Vec<String> {
+    SCREEN.with(|screen| {
+        render_screen_lines_for_rows(&screen.borrow(), columns, max_rows)
+            .iter()
+            .map(|line| strip_ansi_sgr(line))
             .collect()
     })
 }

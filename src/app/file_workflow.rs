@@ -243,6 +243,15 @@ pub(super) fn investigate_file(
     }
 
     progress.finish();
+    let extraction = inspection_extraction_state(&text_indicators);
+    let indicators = text_indicators
+        .as_ref()
+        .map(|text| text.indicators.clone())
+        .unwrap_or_default();
+    // Keep the file-scoped snapshot intact for its existing save prompt, and
+    // also retain it as one entry in the application-wide session.
+    let report_snapshot = InvestigationReport::new(&file, indicators, extraction, lookups.clone());
+    investigation.add_file_investigation(&report_snapshot);
     results::review(editor, &file, text_indicators.as_ref(), &lookups);
 
     terminal::clear_screen();
@@ -257,15 +266,7 @@ pub(super) fn investigate_file(
     ui::close_box();
     let answer = terminal::read_input(editor, "  Save report? [y/N]: ", false);
     if matches!(answer.to_ascii_lowercase().as_str(), "y" | "yes") {
-        let extraction = inspection_extraction_state(&text_indicators);
-        let indicators = text_indicators
-            .as_ref()
-            .map(|text| text.indicators.clone())
-            .unwrap_or_default();
-        // Build the export snapshot from this file's findings and lookups. The
-        // session collection is separate and may also contain unrelated inputs.
-        let report = InvestigationReport::new(&file, indicators, extraction, lookups);
-        match report::save_report(&report, std::path::Path::new("reports")) {
+        match report::save_report(&report_snapshot, std::path::Path::new("reports")) {
             Ok((json, markdown)) => {
                 terminal::clear_screen();
                 ui::header("REPORTS SAVED", "Investigation evidence stored locally");
@@ -362,63 +363,9 @@ pub(super) fn check_indicator(
         }
     };
 
-    investigation.add_indicator(value.as_str(), indicator_type);
-    let mut lookups = Vec::new();
-    let is_hash = matches!(indicator_type, IndicatorType::Hash);
-    let malwarebazaar_configured = is_hash && !auth_key.trim().is_empty();
-    let mb_outcome = if is_hash {
-        if !malwarebazaar_configured {
-            LookupOutcome::NotConfigured
-        } else {
-            lookup_hash_record(client, auth_key, &value)
-        }
-    } else {
-        LookupOutcome::Unsupported {
-            explanation: "MalwareBazaar hash lookups do not support IP/domain indicators.".into(),
-        }
-    };
-    lookups.push(provider_record(
-        &value,
-        LookupSubject::ExtractedIndicator,
-        malwarebazaar_configured.then(now_seconds),
-        mb_outcome,
-    ));
-    let mut queries = HashSet::new();
-    let lookup = threatfox_lookup_record(
-        client,
-        auth_key,
-        &value,
-        indicator_type,
-        LookupSubject::ExtractedIndicator,
-        &mut queries,
-        true,
-    );
-    lookups.push(lookup);
-    let mut urlhaus_state = UrlhausRequestState::default();
-    let urlhaus_lookup = urlhaus_lookup_record(
-        client,
-        auth_key,
-        &value,
-        indicator_type,
-        LookupSubject::ExtractedIndicator,
-        &mut urlhaus_state,
-        true,
-    );
-    lookups.push(urlhaus_lookup);
-    if indicator_type == IndicatorType::Url
-        && let Some((host, host_type)) = host_from_url(&value)
-    {
-        let host_lookup = urlhaus_lookup_record(
-            client,
-            auth_key,
-            &host,
-            host_type,
-            LookupSubject::ExtractedIndicator,
-            &mut urlhaus_state,
-            true,
-        );
-        lookups.push(host_lookup);
-    }
+    let lookups = lookup_indicator_value(client, auth_key, &value, indicator_type);
+
+    investigation.add_indicator_lookup(Indicator::new(value.clone(), indicator_type), &lookups);
 
     terminal::clear_screen();
     ui::header(
@@ -465,23 +412,59 @@ pub(super) fn check_indicator(
     ui::section("VALUE");
     ui::indicator_details(indicator_type.as_str(), &value);
     ui::section("PROVIDER RESULTS");
-    for record in lookups {
+    for record in &lookups {
         provider_views::display_lookup(&record.provider, &record.queried_hash, &record.outcome);
-        investigation.add_provider_lookup(record);
     }
-    if investigation
-        .provider_lookups()
+    if lookups
         .iter()
         .any(|record| record.outcome == LookupOutcome::NotFound)
     {
         ui::warning("NOT FOUND is a provider response at lookup time, not a safety verdict.");
     }
     ui::close_box();
-    terminal::pause();
+    save_indicator_check_prompt(editor, &value, indicator_type, &lookups);
+}
+
+fn save_indicator_check_prompt(
+    editor: &mut InputEditor,
+    value: &str,
+    indicator_type: IndicatorType,
+    lookups: &[report::ProviderLookup],
+) {
+    terminal::clear_screen();
+    ui::header("SAVE INDICATOR CHECK", "Save this lookup for Saved Reports");
+    ui::indicator_details(indicator_type.as_str(), value);
+    ui::box_line("The report contains this indicator and its recorded provider outcomes.");
+    ui::warning("Reports may contain sensitive indicators and provider evidence.");
+    ui::navigation_footer("Enter", "Skip saving and return to Current Session");
+    ui::close_box();
+    let answer = terminal::read_input(editor, "  Save this indicator check? [y/N]: ", false);
+    if !matches!(answer.to_ascii_lowercase().as_str(), "y" | "yes") {
+        return;
+    }
+
+    let indicator = Indicator::new(value.to_owned(), indicator_type);
+    match report::save_indicator_report(&indicator, lookups, std::path::Path::new("reports")) {
+        Ok((json, markdown)) => {
+            terminal::clear_screen();
+            ui::header("INDICATOR CHECK SAVED", "Available in Saved Reports");
+            ui::field("JSON report", json.display());
+            ui::field("Markdown report", markdown.display());
+            ui::navigation_footer("Enter", "Return to Current Session");
+            ui::close_box();
+            terminal::pause();
+        }
+        Err(error) => terminal::show_error(&format!("Could not save indicator report: {error}")),
+    }
 }
 
 pub(super) fn view_indicators(investigation: &Investigation) {
     terminal::clear_screen();
+    render_current_session(investigation);
+    terminal::pause();
+}
+
+fn render_current_session(investigation: &Investigation) {
     ui::header(
         "CURRENT SESSION",
         "Values checked and results recorded so far",
@@ -501,7 +484,68 @@ pub(super) fn view_indicators(investigation: &Investigation) {
         }
     }
     ui::close_box();
-    terminal::pause();
+}
+
+fn lookup_indicator_value(
+    client: &Client,
+    auth_key: &str,
+    value: &str,
+    indicator_type: IndicatorType,
+) -> Vec<report::ProviderLookup> {
+    let mut lookups = Vec::new();
+    let is_hash = matches!(indicator_type, IndicatorType::Hash);
+    let malwarebazaar_configured = is_hash && !auth_key.trim().is_empty();
+    let mb_outcome = if is_hash {
+        if !malwarebazaar_configured {
+            LookupOutcome::NotConfigured
+        } else {
+            lookup_hash_record(client, auth_key, value)
+        }
+    } else {
+        LookupOutcome::Unsupported {
+            explanation: "MalwareBazaar hash lookups do not support IP/domain indicators.".into(),
+        }
+    };
+    lookups.push(provider_record(
+        value,
+        LookupSubject::ExtractedIndicator,
+        malwarebazaar_configured.then(now_seconds),
+        mb_outcome,
+    ));
+    let mut queries = HashSet::new();
+    lookups.push(threatfox_lookup_record(
+        client,
+        auth_key,
+        value,
+        indicator_type,
+        LookupSubject::ExtractedIndicator,
+        &mut queries,
+        true,
+    ));
+    let mut urlhaus_state = UrlhausRequestState::default();
+    lookups.push(urlhaus_lookup_record(
+        client,
+        auth_key,
+        value,
+        indicator_type,
+        LookupSubject::ExtractedIndicator,
+        &mut urlhaus_state,
+        true,
+    ));
+    if indicator_type == IndicatorType::Url
+        && let Some((host, host_type)) = host_from_url(value)
+    {
+        lookups.push(urlhaus_lookup_record(
+            client,
+            auth_key,
+            &host,
+            host_type,
+            LookupSubject::ExtractedIndicator,
+            &mut urlhaus_state,
+            true,
+        ));
+    }
+    lookups
 }
 
 #[cfg(test)]
@@ -515,10 +559,82 @@ mod tests {
     };
     use crate::file::inspect_file;
     use crate::indicator::{Indicator, IndicatorType};
+    use crate::investigation::Investigation;
     use crate::providers::malwarebazaar::{MalwareLookupError, MalwareLookupResult, MalwareSample};
     use crate::providers::threatfox::{ThreatFoxError, ThreatFoxLookupResult};
-    use crate::report::{LookupOutcome, LookupSubject};
+    use crate::report::{InvestigationReport, LookupOutcome, LookupSubject, ProviderLookup};
     use std::collections::HashSet;
+
+    #[test]
+    fn individual_hash_ip_and_domain_checks_run_without_credentials() {
+        let client = reqwest::blocking::Client::new();
+        let checks = [
+            ("a".repeat(64), IndicatorType::Hash),
+            ("192.0.2.4".to_owned(), IndicatorType::IP),
+            ("example.test".to_owned(), IndicatorType::Domain),
+        ];
+
+        for (value, indicator_type) in checks {
+            let lookups = super::lookup_indicator_value(&client, "", &value, indicator_type);
+            assert_eq!(lookups.len(), 3);
+            assert!(lookups.iter().all(|lookup| matches!(
+                lookup.outcome,
+                LookupOutcome::NotConfigured | LookupOutcome::Unsupported { .. }
+            )));
+            if indicator_type == IndicatorType::Hash {
+                assert_eq!(lookups[0].outcome, LookupOutcome::NotConfigured);
+            } else {
+                assert!(matches!(
+                    lookups[0].outcome,
+                    LookupOutcome::Unsupported { .. }
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn current_session_review_renders_accumulated_file_and_value_results() {
+        let file = crate::file::FileInfo {
+            name: "sample.bin".into(),
+            size: 12,
+            sha256: "file-sha256".into(),
+        };
+        let file_report = InvestigationReport::new(
+            &file,
+            vec![Indicator::new("file-domain.test", IndicatorType::Domain)],
+            Some(false),
+            vec![ProviderLookup {
+                provider: "MalwareBazaar".into(),
+                subject: LookupSubject::OriginalFileSha256,
+                queried_hash: "file-sha256".into(),
+                retrieved_at_unix_seconds: None,
+                outcome: LookupOutcome::NotConfigured,
+            }],
+        );
+        let mut investigation = Investigation::new();
+        investigation.add_file_investigation(&file_report);
+        investigation.add_indicator_lookup(
+            Indicator::new("198.51.100.8", IndicatorType::IP),
+            &[ProviderLookup {
+                provider: "ThreatFox".into(),
+                subject: LookupSubject::ExtractedIndicator,
+                queried_hash: "198.51.100.8".into(),
+                retrieved_at_unix_seconds: Some(1),
+                outcome: LookupOutcome::NotFound,
+            }],
+        );
+
+        crate::ui::reset_screen();
+        super::render_current_session(&investigation);
+        let rendered = crate::ui::recorded_line_texts().join("\n");
+
+        assert!(rendered.contains("file-domain.test"));
+        assert!(rendered.contains("198.51.100.8"));
+        assert!(rendered.contains("MalwareBazaar"));
+        assert!(rendered.contains("NOT CONFIGURED"));
+        assert!(rendered.contains("ThreatFox"));
+        assert!(rendered.contains("NOT FOUND"));
+    }
 
     #[test]
     fn automatic_hash_lookups_are_capped_and_case_insensitively_deduplicated() {

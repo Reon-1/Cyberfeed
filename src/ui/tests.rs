@@ -55,6 +55,45 @@ fn wrapped_continuation_lines_keep_the_original_indentation() {
 }
 
 #[test]
+fn fields_with_long_labels_wrap_values_within_the_frame_and_keep_alignment() {
+    let op = DrawOp::Field(
+        "Indicator type".into(),
+        "https://example.test/a/very/long/path/that/needs/to/wrap/without/loss".into(),
+    );
+    let lines = render_op_lines(&op, 80)
+        .iter()
+        .map(|line| strip_ansi_sgr(line))
+        .collect::<Vec<_>>();
+
+    assert!(lines.len() > 1);
+    assert!(lines.iter().all(|line| visible_width(line) <= 80));
+    let first_value_byte = lines[0].find("https://").unwrap();
+    let first_value_column = lines[0][..first_value_byte].chars().count();
+    let continuation_value_byte = lines[1]
+        .char_indices()
+        .find(|(_, character)| *character != '║' && !character.is_whitespace())
+        .map(|(index, _)| index)
+        .unwrap();
+    let continuation_value_column = lines[1][..continuation_value_byte].chars().count();
+    assert_eq!(first_value_column, continuation_value_column);
+    let rendered_value = lines
+        .iter()
+        .map(|line| {
+            line.chars()
+                .skip(first_value_column)
+                .take_while(|character| *character != '║')
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect::<String>();
+    assert_eq!(
+        rendered_value, "https://example.test/a/very/long/path/that/needs/to/wrap/without/loss",
+        "rendered lines: {lines:?}"
+    );
+}
+
+#[test]
 fn terminal_text_replaces_control_characters_without_losing_newlines() {
     assert_eq!(
         sanitize_terminal_text("filename\u{1b}[2J\r\u{7} end\nnext"),

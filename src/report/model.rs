@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SCHEMA_VERSION: u32 = 4;
+pub const SESSION_REPORT_TYPE: &str = "SESSION";
+/// Saved JSON reports are bounded to this size when written and reopened.
+pub const MAX_SAVED_REPORT_BYTES: u64 = 32 * 1024 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Exportable evidence for one local file inspection.
 ///
@@ -19,6 +22,41 @@ pub struct InvestigationReport {
     pub provider_lookups: Vec<ProviderLookup>,
     pub summary: ReportSummary,
     pub interpretation: Vec<String>,
+}
+
+/// A snapshot of all completed checks in one application session.
+///
+/// File checks retain their existing file-scoped report as one entry, while
+/// manual indicator checks retain their own indicator and provider outcomes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionReport {
+    pub schema_version: u32,
+    pub report_type: String,
+    pub generated_at_unix_seconds: u64,
+    pub checks: Vec<SessionCheck>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "check_type", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SessionCheck {
+    FileInvestigation {
+        report: Box<InvestigationReport>,
+    },
+    IndicatorLookup {
+        indicator: Indicator,
+        provider_lookups: Vec<ProviderLookup>,
+    },
+}
+
+impl SessionReport {
+    pub fn new(checks: Vec<SessionCheck>) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            report_type: SESSION_REPORT_TYPE.into(),
+            generated_at_unix_seconds: now_seconds(),
+            checks,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

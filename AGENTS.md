@@ -25,11 +25,11 @@ CyberFeed is a Rust CLI for local file inspection, indicator extraction, passive
 - `src/indicator.rs`: indicator types and classification.
 - `src/file.rs`: local file hashing and text indicator extraction; never execute inspected files or visit extracted URLs.
 - `src/log_hunt.rs`: bounded streaming text/JSONL extraction with per-occurrence source locations.
-- `src/investigation.rs`: investigation/session evidence.
+- `src/investigation.rs`: in-memory session indicators, provider observations, and completed file/value check history.
 - `src/providers/malwarebazaar.rs`, `src/providers/threatfox.rs`, `src/providers/urlhaus.rs`: provider-specific API behavior.
 - `src/providers/cloudflare.rs`: Cloudflare Radar/feed behavior; do not assume it supports the same lookup operations as the IOC providers.
 - `src/providers/mod.rs`: external API client module declarations.
-- `src/report/`: report models, summary calculation, rendering, and persistence.
+- `src/report/`: file-scoped and session report models, summary calculation, rendering, and paired JSON/Markdown persistence. Saved-report loading must preserve compatibility with older file reports while recognizing session reports.
 - `src/report/stix.rs`: STIX 2.1 bundle construction and separate local export.
 - `src/app/saved_reports/`: saved-report browsing and comparison.
 

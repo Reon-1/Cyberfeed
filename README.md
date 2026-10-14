@@ -41,7 +41,7 @@ CyberFeed is a Rust-based defensive threat-intelligence investigation CLI. It st
 - Browse MalwareBazaar recent-sample feeds with optional country filtering, or view Cloudflare Radar Layer 7 attack telemetry.
 - Follow live file-lookup progress, review provider outcomes, page through indicators, and open detailed recorded evidence.
 - Resize the terminal while CyberFeed is open; the active screen redraws and the current prompt text is retained.
-- Save paired Markdown and JSON file-investigation reports, browse reports, and compare saved investigations offline when they refer to the same file SHA-256.
+- Save paired Markdown and JSON file-investigation reports or a report of all completed checks in the current session; browse saved reports and compare file investigations offline when they refer to the same file SHA-256.
 - Run an offline demo and local setup diagnostics from the main menu; diagnostics report credential presence only and do not contact providers.
 - Batch inspect up to 100 selected files or one directory level at a time, saving a local report per readable file. Batch mode performs local extraction only.
 - Export locally extracted IP, domain, URL, and common hash indicators from a saved report as a STIX 2.1 JSON bundle. The export describes observed indicators and makes no file-maliciousness claim.
@@ -86,9 +86,9 @@ If a provider's credential is absent, its lookup is recorded as not configured. 
 ## Using the menus
 
 - **Check a File** starts local inspection and provider lookups. Use the displayed number to open indicator evidence, `N`/`P` to change overview pages, `F` for the original file's hash result, and `0` to continue to the report-saving prompt.
-- **Current Session** lets you check a hash, IP address, domain, or HTTP/HTTPS URL and review evidence collected in this session. Actionable diagnostics explain rejected formats (such as unsupported hash lengths or malformed URLs/domains).
+- **Current Session** lets you check a hash, IP address, domain, or HTTP/HTTPS URL, review accumulated evidence, and choose **Save This Session** to save all completed file and value checks together. Actionable diagnostics explain rejected formats (such as unsupported hash lengths or malformed URLs/domains).
 - **More Tools** groups the offline demo, setup check, provider configuration, batch file check, and optional live threat feeds so the main menu stays short.
-- **Saved Reports** browses local report snapshots and offers **Compare Reports** when at least two valid reports are available.
+- **Saved Reports** browses file and session reports. **Compare File Reports** is available when at least two valid file reports are present.
 - The main menu uses `1`–`5`; choose `0` to exit. Submenus use `0` to go back. At prompts, use the arrow keys to edit or browse input history, `Tab` to complete file paths, and `Ctrl+C` to return from the current prompt. Credential entry is hidden; `Esc` or `Ctrl+C` cancels it. Resizing redraws the active screen without submitting input.
 - **Offline Demo** shows explicitly simulated training data without network access. **Check Setup** reports credential presence (not authentication) and report-directory access. **Configure Providers** edits the two supported `.env` keys with hidden input and confirmation. **Batch Check Files** accepts semicolon-separated paths or one directory (non-recursive), inspects at most 100 files, and saves a report per readable file without running lookups.
 - File investigations open a **Quick Summary** first. Choose `D` to review detailed indicator and provider evidence from the same recorded results, then `0` to continue to the report-saving prompt.
@@ -99,7 +99,7 @@ An optional independent STIX check can be run after installing the OASIS validat
 
 ## Reports, privacy, and limits
 
-Choosing to save a file investigation writes a JSON and a Markdown report under `reports/` relative to the current working directory. Reports contain the file's name, size, SHA-256, extracted indicators, and recorded provider evidence. File evidence stays in the current session unless that file report is saved. Saved reports can be browsed and compared offline; manually added session indicators are not automatically included in file reports. Reports can contain sensitive indicators and hashes, so keep them private.
+Choosing to save a file investigation writes a JSON and a Markdown file-scoped report under `reports/` relative to the current working directory. **Current Session → Save This Session** writes a separate session report containing each completed file investigation and independent value check, including each check's recorded provider evidence. Both report types can be reopened offline through Saved Reports; comparison remains for file reports. Manually checked indicators are not added to a file-scoped report. Reports can contain sensitive indicators and hashes, so keep them private.
 
 On Unix, report files are created with owner-only read/write permissions. Saved JSON reports larger than 32 MiB are marked unavailable by the report browser; the size is enforced while reading, not only from file metadata.
 

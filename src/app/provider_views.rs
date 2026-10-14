@@ -13,77 +13,38 @@ pub(crate) fn display_lookup(provider: &str, indicator: &str, outcome: &LookupOu
     match outcome {
         LookupOutcome::Found(details) => display_malwarebazaar_match(details),
         LookupOutcome::ThreatFoxFound { findings } => {
-            for finding in findings {
+            if findings.is_empty() {
                 ui::field(
-                    "Indicator",
-                    format!("{} ({})", finding.ioc, finding.ioc_type),
+                    "Details",
+                    "The stored result is marked FOUND but contains no IOC records.",
                 );
-                ui::field(
-                    "Indicator type",
-                    finding
-                        .ioc_type_description
-                        .as_deref()
-                        .unwrap_or("Not provided"),
-                );
-                ui::field(
-                    "Threat type",
-                    finding.threat_type.as_deref().unwrap_or("Not provided"),
-                );
-                ui::field(
-                    "Threat info",
-                    finding
-                        .threat_type_description
-                        .as_deref()
-                        .unwrap_or("Not provided"),
-                );
-                ui::field(
-                    "Malware family",
-                    finding.malware.as_deref().unwrap_or("Not provided"),
-                );
-                ui::field(
-                    "Malware name",
-                    finding
-                        .malware_printable
-                        .as_deref()
-                        .unwrap_or("Not provided"),
-                );
-                ui::field(
+            }
+            for (index, finding) in findings.iter().enumerate() {
+                if findings.len() > 1 {
+                    ui::field("Finding", index + 1);
+                }
+                if finding.ioc != indicator {
+                    field_or_not_provided("Matched indicator", Some(&finding.ioc));
+                }
+                field_or_not_provided("Indicator type", Some(&finding.ioc_type));
+                field_or_not_provided("Type info", finding.ioc_type_description.as_deref());
+                field_or_not_provided("Threat type", finding.threat_type.as_deref());
+                field_or_not_provided("Threat info", finding.threat_type_description.as_deref());
+                field_or_not_provided("Malware family", finding.malware.as_deref());
+                field_or_not_provided("Malware name", finding.malware_printable.as_deref());
+                field_or_not_provided(
                     "Confidence",
                     finding
                         .confidence_level
-                        .map_or_else(|| "Not provided".into(), |value| format!("{value}%")),
+                        .map(|confidence| format!("{confidence}%"))
+                        .as_deref(),
                 );
-                ui::field(
-                    "First seen",
-                    finding.first_seen.as_deref().unwrap_or("Not provided"),
-                );
-                ui::field(
-                    "Last seen",
-                    finding.last_seen.as_deref().unwrap_or("Not provided"),
-                );
-                ui::field(
-                    "Reference",
-                    finding.reference.as_deref().unwrap_or("Not provided"),
-                );
-                ui::field(
-                    "Reporter",
-                    finding.reporter.as_deref().unwrap_or("Not provided"),
-                );
-                ui::field(
-                    "Tags",
-                    if finding.tags.is_empty() {
-                        "Not provided".to_owned()
-                    } else {
-                        finding.tags.join(", ")
-                    },
-                );
-                ui::field(
-                    "Record ID",
-                    finding
-                        .source_record_id
-                        .as_deref()
-                        .unwrap_or("Not provided"),
-                );
+                field_or_not_provided("First seen", finding.first_seen.as_deref());
+                field_or_not_provided("Last seen", finding.last_seen.as_deref());
+                field_or_not_provided("Reference", finding.reference.as_deref());
+                field_or_not_provided("Reporter", finding.reporter.as_deref());
+                display_tags(&finding.tags);
+                field_or_not_provided("Record ID", finding.source_record_id.as_deref());
             }
         }
         LookupOutcome::UrlhausFound { details } => display_urlhaus_details(details),
@@ -111,6 +72,8 @@ pub(crate) fn display_lookup(provider: &str, indicator: &str, outcome: &LookupOu
             );
         }
     }
+    ui::divider();
+    ui::spacer();
 }
 
 /// Render provider evidence without repeating the selected indicator value.
@@ -131,37 +94,42 @@ pub(crate) fn display_lookup_details(
             }
             present_field("First seen", Some(&details.first_seen));
             present_field("File type", Some(&details.file_type));
-            present_field("Sample file", details.sample_filename.as_deref());
-            present_field("Signature", details.signature.as_deref());
+            field_or_not_provided("Sample file", details.sample_filename.as_deref());
+            field_or_not_provided("Signature", details.signature.as_deref());
         }
         LookupOutcome::ThreatFoxFound { findings } => {
+            if findings.is_empty() {
+                ui::field(
+                    "Details",
+                    "The stored result is marked FOUND but contains no IOC records.",
+                );
+            }
             for (index, finding) in findings.iter().enumerate() {
                 if findings.len() > 1 {
                     ui::field("Finding", index + 1);
                 }
                 if finding.ioc != selected_indicator {
-                    ui::field(
-                        "Matched indicator",
-                        format!("{} ({})", finding.ioc, finding.ioc_type),
-                    );
+                    field_or_not_provided("Matched indicator", Some(&finding.ioc));
                 }
-                present_field("Indicator type", Some(&finding.ioc_type));
-                present_field("Type info", finding.ioc_type_description.as_deref());
-                present_field("Threat type", finding.threat_type.as_deref());
-                present_field("Threat info", finding.threat_type_description.as_deref());
-                present_field("Malware family", finding.malware.as_deref());
-                present_field("Malware name", finding.malware_printable.as_deref());
-                if let Some(confidence) = finding.confidence_level {
-                    ui::field("Confidence", format!("{confidence}%"));
-                }
-                present_field("First seen", finding.first_seen.as_deref());
-                present_field("Last seen", finding.last_seen.as_deref());
-                present_field("Record ID", finding.source_record_id.as_deref());
-                present_field("Reference", finding.reference.as_deref());
-                present_field("Reporter", finding.reporter.as_deref());
-                if !finding.tags.is_empty() {
-                    ui::field("Tags", finding.tags.join(", "));
-                }
+                field_or_not_provided("Indicator type", Some(&finding.ioc_type));
+                field_or_not_provided("Type info", finding.ioc_type_description.as_deref());
+                field_or_not_provided("Threat type", finding.threat_type.as_deref());
+                field_or_not_provided("Threat info", finding.threat_type_description.as_deref());
+                field_or_not_provided("Malware family", finding.malware.as_deref());
+                field_or_not_provided("Malware name", finding.malware_printable.as_deref());
+                field_or_not_provided(
+                    "Confidence",
+                    finding
+                        .confidence_level
+                        .map(|confidence| format!("{confidence}%"))
+                        .as_deref(),
+                );
+                field_or_not_provided("First seen", finding.first_seen.as_deref());
+                field_or_not_provided("Last seen", finding.last_seen.as_deref());
+                field_or_not_provided("Record ID", finding.source_record_id.as_deref());
+                field_or_not_provided("Reference", finding.reference.as_deref());
+                field_or_not_provided("Reporter", finding.reporter.as_deref());
+                display_tags(&finding.tags);
             }
         }
         LookupOutcome::UrlhausFound { details } => display_urlhaus_details(details),
@@ -190,6 +158,9 @@ pub(crate) fn display_lookup_details(
             );
         }
     }
+    // Close each provider block so consecutive results remain visually distinct.
+    ui::divider();
+    ui::spacer();
 }
 
 fn present_field(label: &str, value: Option<&str>) {
@@ -198,23 +169,51 @@ fn present_field(label: &str, value: Option<&str>) {
     }
 }
 
+fn field_or_not_provided(label: &str, value: Option<&str>) {
+    let value = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("Not provided"))
+        .unwrap_or("Not provided");
+    ui::field(label, value);
+}
+
+fn display_tags(tags: &[String]) {
+    let tags = tags
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .collect::<Vec<_>>();
+    if tags.is_empty() {
+        field_or_not_provided("Tags", None);
+    } else {
+        field_or_not_provided("Tags", Some(&tags.join(", ")));
+    }
+}
+
 fn display_urlhaus_details(details: &crate::report::UrlhausLookupDetails) {
-    present_field("URLhaus reference", details.reference.as_deref());
-    present_field("Queried host", details.queried_host.as_deref());
-    present_field("Payload MD5", details.md5_hash.as_deref());
-    present_field("Payload SHA-256", details.sha256_hash.as_deref());
-    present_field("File type", details.file_type.as_deref());
-    present_field("First seen", details.first_seen.as_deref());
-    present_field("Last seen", details.last_seen.as_deref());
+    field_or_not_provided("URLhaus reference", details.reference.as_deref());
+    field_or_not_provided("Queried host", details.queried_host.as_deref());
+    field_or_not_provided("Payload MD5", details.md5_hash.as_deref());
+    field_or_not_provided("Payload SHA-256", details.sha256_hash.as_deref());
+    field_or_not_provided("File type", details.file_type.as_deref());
+    field_or_not_provided("First seen", details.first_seen.as_deref());
+    field_or_not_provided("Last seen", details.last_seen.as_deref());
     for (index, record) in details.associated_urls.iter().enumerate() {
-        ui::field("Associated URL", format!("{}. {}", index + 1, record.url));
-        present_field("URL status", record.status.as_deref());
-        present_field("URLhaus reference", record.reference.as_deref());
-        present_field("Host", record.host.as_deref());
-        present_field("Threat", record.threat.as_deref());
-        if !record.tags.is_empty() {
-            ui::field("Tags", record.tags.join(", "));
-        }
+        let url = if record.url.trim().is_empty() {
+            "Not provided"
+        } else {
+            &record.url
+        };
+        ui::field("Associated URL", format!("{}. {}", index + 1, url));
+        field_or_not_provided("URL status", record.status.as_deref());
+        field_or_not_provided("URLhaus reference", record.reference.as_deref());
+        field_or_not_provided("Host", record.host.as_deref());
+        field_or_not_provided("Threat", record.threat.as_deref());
+        field_or_not_provided("Date added", record.date_added.as_deref());
+        field_or_not_provided("First seen", record.first_seen.as_deref());
+        field_or_not_provided("Last seen", record.last_seen.as_deref());
+        display_tags(&record.tags);
     }
     if details.associated_urls.is_empty()
         && let Some(count) = details.associated_url_count
@@ -224,17 +223,11 @@ fn display_urlhaus_details(details: &crate::report::UrlhausLookupDetails) {
 }
 
 fn display_malwarebazaar_match(details: &MatchDetails) {
-    ui::field("Matched SHA-256", &details.matched_sha256);
-    ui::field("First seen", &details.first_seen);
-    ui::field("File type", &details.file_type);
-    ui::field(
-        "Sample file",
-        details.sample_filename.as_deref().unwrap_or("Not provided"),
-    );
-    ui::field(
-        "Signature",
-        details.signature.as_deref().unwrap_or("Not provided"),
-    );
+    field_or_not_provided("Matched SHA-256", Some(&details.matched_sha256));
+    field_or_not_provided("First seen", Some(&details.first_seen));
+    field_or_not_provided("File type", Some(&details.file_type));
+    field_or_not_provided("Sample file", details.sample_filename.as_deref());
+    field_or_not_provided("Signature", details.signature.as_deref());
 }
 
 pub(crate) fn status_kind(outcome: &LookupOutcome) -> ui::Status {
@@ -445,7 +438,7 @@ fn percentage_bar(value: f64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_lookup_details, status_kind};
+    use super::{display_lookup, display_lookup_details, status_kind};
     use crate::report::LookupOutcome;
     use crate::ui::Status;
 
@@ -511,5 +504,308 @@ mod tests {
                 assert!(lines.iter().any(|line| line.contains("Details")));
             }
         }
+    }
+
+    #[test]
+    fn provider_details_are_separated_and_keep_status_and_evidence() {
+        crate::ui::reset_screen();
+        display_lookup_details(
+            "MalwareBazaar",
+            "selected",
+            &LookupOutcome::Found(crate::report::MatchDetails {
+                matched_sha256: "matched-hash".into(),
+                first_seen: "2026-10-14".into(),
+                file_type: "PE32".into(),
+                sample_filename: None,
+                signature: None,
+            }),
+        );
+        display_lookup_details("ThreatFox", "selected", &LookupOutcome::NotFound);
+        display_lookup_details("URLhaus", "selected", &LookupOutcome::NotFound);
+
+        let lines = crate::ui::recorded_rendered_lines(80);
+        let malware = lines
+            .iter()
+            .position(|line| line.contains("MalwareBazaar"))
+            .unwrap();
+        let threatfox = lines
+            .iter()
+            .position(|line| line.contains("ThreatFox"))
+            .unwrap();
+        let urlhaus = lines
+            .iter()
+            .position(|line| line.contains("URLhaus"))
+            .unwrap();
+        assert!(malware < threatfox);
+        assert!(threatfox < urlhaus);
+        for (start, end) in [(malware, threatfox), (threatfox, urlhaus)] {
+            assert!(
+                lines[start + 1..end].iter().any(|line| {
+                    line.strip_prefix('║')
+                        .and_then(|interior| interior.strip_suffix('║'))
+                        .is_some_and(|interior| interior.chars().all(char::is_whitespace))
+                }),
+                "provider sections must have a blank framed row between them"
+            );
+        }
+        assert!(
+            lines
+                .iter()
+                .all(|line| crate::ui::visible_width(line) <= 80)
+        );
+        assert!(lines.iter().any(|line| line.contains("FOUND")));
+        assert!(lines.iter().any(|line| line.contains("NOT FOUND")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Matched SHA-256") && line.contains("matched-hash"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Sample file") && line.contains("Not provided"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Signature") && line.contains("Not provided"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("does not prove the item"))
+        );
+        assert!(lines.iter().any(|line| line.contains("is safe.")));
+    }
+
+    #[test]
+    fn value_search_provider_results_have_framed_spacing() {
+        crate::ui::reset_screen();
+        display_lookup(
+            "MalwareBazaar",
+            "selected",
+            &LookupOutcome::Found(crate::report::MatchDetails {
+                matched_sha256: "matched-hash".into(),
+                first_seen: "today".into(),
+                file_type: "PE32".into(),
+                sample_filename: None,
+                signature: None,
+            }),
+        );
+        display_lookup("ThreatFox", "selected", &LookupOutcome::NotFound);
+        display_lookup("URLhaus", "selected", &LookupOutcome::NotFound);
+
+        let lines = crate::ui::recorded_rendered_lines(80);
+        let malware = lines
+            .iter()
+            .position(|line| line.contains("MalwareBazaar") && line.contains("FOUND"))
+            .unwrap();
+        let threatfox = lines
+            .iter()
+            .position(|line| line.contains("ThreatFox") && line.contains("NOT FOUND"))
+            .unwrap();
+        let urlhaus = lines
+            .iter()
+            .position(|line| line.contains("URLhaus") && line.contains("NOT FOUND"))
+            .unwrap();
+
+        for (start, end) in [(malware, threatfox), (threatfox, urlhaus)] {
+            assert!(
+                lines[start + 1..end].iter().any(|line| {
+                    line.strip_prefix('║')
+                        .and_then(|interior| interior.strip_suffix('║'))
+                        .is_some_and(|interior| interior.chars().all(char::is_whitespace))
+                }),
+                "Value Search results must have an empty framed row between providers"
+            );
+        }
+        assert!(
+            lines
+                .iter()
+                .all(|line| crate::ui::visible_width(line) <= 80)
+        );
+        assert!(lines.iter().any(|line| line.contains("Matched SHA-256")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("does not prove the item"))
+        );
+    }
+
+    #[test]
+    fn value_search_groups_multiple_threatfox_findings_and_normalizes_missing_fields() {
+        crate::ui::reset_screen();
+        let finding = crate::report::ThreatFoxFinding {
+            source_record_id: None,
+            ioc: "selected.example".into(),
+            ioc_type: "domain".into(),
+            ioc_type_description: Some(String::new()),
+            threat_type: None,
+            threat_type_description: Some("  ".into()),
+            malware: None,
+            malware_printable: Some("Not provided".into()),
+            confidence_level: None,
+            first_seen: None,
+            last_seen: Some(String::new()),
+            reference: None,
+            reporter: None,
+            tags: vec![String::new()],
+        };
+        let mut second = finding.clone();
+        second.ioc = "other.example".into();
+        second.malware_printable = Some("Different family".into());
+        display_lookup(
+            "ThreatFox",
+            "selected.example",
+            &LookupOutcome::ThreatFoxFound {
+                findings: vec![finding, second],
+            },
+        );
+
+        let lines = crate::ui::recorded_line_texts();
+        assert!(lines.iter().any(|line| line == "Finding: 1"));
+        assert!(lines.iter().any(|line| line == "Finding: 2"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "Matched indicator: other.example")
+        );
+        assert!(lines.iter().any(|line| line == "Type info: Not provided"));
+        assert!(lines.iter().any(|line| line == "Tags: Not provided"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "Malware name: Different family")
+        );
+        assert!(!lines.iter().any(|line| line.ends_with(": ")));
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.as_str() == "Indicator: selected.example")
+                .count(),
+            1,
+            "the selected IOC should not be repeated for a matching finding"
+        );
+    }
+
+    #[test]
+    fn value_search_explains_empty_threatfox_match_data() {
+        crate::ui::reset_screen();
+        display_lookup(
+            "ThreatFox",
+            "selected.example",
+            &LookupOutcome::ThreatFoxFound { findings: vec![] },
+        );
+
+        let lines = crate::ui::recorded_line_texts();
+        assert!(lines.iter().any(|line| line.contains("FOUND")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("contains no IOC records"))
+        );
+    }
+
+    #[test]
+    fn missing_and_empty_metadata_render_once_as_not_provided() {
+        crate::ui::reset_screen();
+        let threatfox = crate::report::ThreatFoxFinding {
+            source_record_id: None,
+            ioc: "indicator.example".into(),
+            ioc_type: "domain".into(),
+            ioc_type_description: Some(String::new()),
+            threat_type: None,
+            threat_type_description: Some("  ".into()),
+            malware: None,
+            malware_printable: Some("Not provided".into()),
+            confidence_level: None,
+            first_seen: None,
+            last_seen: Some(String::new()),
+            reference: Some("   ".into()),
+            reporter: None,
+            tags: vec![String::new(), "  ".into()],
+        };
+        display_lookup_details(
+            "ThreatFox",
+            "selected",
+            &LookupOutcome::ThreatFoxFound {
+                findings: vec![threatfox],
+            },
+        );
+
+        let urlhaus = crate::report::UrlhausLookupDetails {
+            reference: None,
+            queried_host: Some(String::new()),
+            associated_url_count: Some(1),
+            md5_hash: None,
+            sha256_hash: None,
+            file_type: None,
+            first_seen: None,
+            last_seen: Some(" ".into()),
+            signature: None,
+            associated_urls: vec![crate::report::UrlhausUrlRecord {
+                reference: None,
+                url: "https://indicator.example/path".into(),
+                status: Some(String::new()),
+                host: None,
+                date_added: Some("2026-01-02".into()),
+                first_seen: Some("2026-01-03".into()),
+                last_seen: Some("2026-01-04".into()),
+                threat: Some("Not provided".into()),
+                tags: vec![" ".into()],
+            }],
+        };
+        display_lookup_details(
+            "URLhaus",
+            "selected",
+            &LookupOutcome::UrlhausFound { details: urlhaus },
+        );
+
+        let lines = crate::ui::recorded_line_texts();
+        assert!(lines.iter().any(|line| line == "Date added: 2026-01-02"));
+        assert!(lines.iter().any(|line| line == "First seen: 2026-01-03"));
+        assert!(lines.iter().any(|line| line == "Last seen: 2026-01-04"));
+        for label in [
+            "Type info",
+            "Threat type",
+            "Threat info",
+            "Malware family",
+            "Malware name",
+            "First seen",
+            "Last seen",
+            "Record ID",
+            "Reference",
+            "Reporter",
+            "Tags",
+            "URLhaus reference",
+            "Queried host",
+            "Payload MD5",
+            "Payload SHA-256",
+            "File type",
+            "URL status",
+            "Host",
+            "Threat",
+        ] {
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains(label) && line.contains("Not provided")),
+                "{label} should show the missing-value placeholder"
+            );
+            assert!(
+                !lines
+                    .iter()
+                    .any(|line| line.ends_with(&format!("{label}: "))),
+                "{label} must not produce a blank row"
+            );
+        }
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("Not provided"))
+                .count(),
+            24,
+            "an existing placeholder must not be duplicated"
+        );
     }
 }

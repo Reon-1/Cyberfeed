@@ -7,7 +7,31 @@ use crate::investigation::Investigation;
 use crate::ui;
 use reqwest::blocking::Client;
 
-const INVESTIGATION_MENU_OPTIONS: [(&str, &str, &str); 3] = [
+const MAIN_MENU_OPTIONS: [(&str, &str, &str); 5] = [
+    ("1", "Check a File", "Analyze a file on this computer"),
+    (
+        "2",
+        "Current Session",
+        "Check a value, review results, or save this session",
+    ),
+    (
+        "3",
+        "Search Logs",
+        "Find IPs, domains, URLs, and hashes in a local text or JSONL log",
+    ),
+    (
+        "4",
+        "Saved Reports",
+        "Review past file, session, and log investigations",
+    ),
+    (
+        "5",
+        "More Tools",
+        "Offline demo, setup check, batch files, and live threat feeds",
+    ),
+];
+
+const INVESTIGATION_MENU_OPTIONS: [(&str, &str, &str); 4] = [
     (
         "1",
         "Check a Value",
@@ -17,6 +41,11 @@ const INVESTIGATION_MENU_OPTIONS: [(&str, &str, &str); 3] = [
         "2",
         "Review This Session",
         "See the values checked and results recorded so far",
+    ),
+    (
+        "3",
+        "Save This Session",
+        "Save all completed file and value checks as one report",
     ),
     ("0", "Back", "Return to the main menu"),
 ];
@@ -50,6 +79,46 @@ const MORE_MENU_OPTIONS: [(&str, &str, &str); 6] = [
     ("0", "Back", "Return to the main menu"),
 ];
 
+#[derive(Debug, PartialEq, Eq)]
+enum MainMenuAction {
+    CheckFile,
+    CurrentSession,
+    SearchLogs,
+    SavedReports,
+    MoreTools,
+    Exit,
+}
+
+fn main_menu_action(selection: &str) -> Option<MainMenuAction> {
+    Some(match selection {
+        "1" => MainMenuAction::CheckFile,
+        "2" => MainMenuAction::CurrentSession,
+        "3" => MainMenuAction::SearchLogs,
+        "4" => MainMenuAction::SavedReports,
+        "5" => MainMenuAction::MoreTools,
+        "0" => MainMenuAction::Exit,
+        _ => return None,
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SessionMenuAction {
+    CheckValue,
+    Review,
+    Save,
+    Back,
+}
+
+fn session_menu_action(selection: &str) -> Option<SessionMenuAction> {
+    Some(match selection {
+        "1" => SessionMenuAction::CheckValue,
+        "2" => SessionMenuAction::Review,
+        "3" => SessionMenuAction::Save,
+        "0" => SessionMenuAction::Back,
+        _ => return None,
+    })
+}
+
 pub(super) fn run(client: &Client, config: &Config) {
     let mut editor = match terminal::new_editor() {
         Ok(editor) => editor,
@@ -66,45 +135,27 @@ pub(super) fn run(client: &Client, config: &Config) {
         terminal::clear_screen();
         ui::header("CYBERFEED", "Check files, search logs, and review evidence");
         ui::box_line("");
-        ui::menu_item("1", "Check a File", "Analyze a file on this computer");
-        ui::menu_item(
-            "2",
-            "Current Session",
-            "Check a value or review results from this session",
-        );
-        ui::menu_item(
-            "3",
-            "Search Logs",
-            "Find IPs, domains, URLs, and hashes in a local text or JSONL log",
-        );
-        ui::menu_item(
-            "4",
-            "Saved Reports",
-            "Review past file and log investigations",
-        );
+        render_main_menu_options();
         ui::box_line("");
-        ui::menu_item(
-            "5",
-            "More Tools",
-            "Offline demo, setup check, batch files, and live threat feeds",
-        );
         ui::note("File checks, log searches, and saved reports work without provider credentials.");
         ui::navigation_footer("0", "Exit · choose 1–5 above");
         ui::close_box();
 
-        match terminal::read_input(&mut editor, "\n  Choose an option (0 to exit): ", false)
-            .as_str()
-        {
-            "1" => file_workflow::investigate_file(
+        let selection =
+            terminal::read_input(&mut editor, "\n  Choose an option (0 to exit): ", false);
+        match main_menu_action(&selection) {
+            Some(MainMenuAction::CheckFile) => file_workflow::investigate_file(
                 &mut editor,
                 client,
                 abusech_auth_key,
                 &mut investigation,
             ),
-            "2" => investigation_menu(&mut editor, client, abusech_auth_key, &mut investigation),
-            "3" => log_hunt(&mut editor),
-            "4" => saved_reports::menu(&mut editor),
-            "5" => more_menu(
+            Some(MainMenuAction::CurrentSession) => {
+                investigation_menu(&mut editor, client, abusech_auth_key, &mut investigation)
+            }
+            Some(MainMenuAction::SearchLogs) => log_hunt(&mut editor),
+            Some(MainMenuAction::SavedReports) => saved_reports::menu(&mut editor),
+            Some(MainMenuAction::MoreTools) => more_menu(
                 &mut editor,
                 client,
                 config,
@@ -112,13 +163,19 @@ pub(super) fn run(client: &Client, config: &Config) {
                 abusech_auth_key,
                 &mut investigation,
             ),
-            "0" => {
+            Some(MainMenuAction::Exit) => {
                 terminal::clear_screen();
                 println!("Goodbye.");
                 break;
             }
-            _ => terminal::invalid_choice(),
+            None => terminal::invalid_choice(),
         }
+    }
+}
+
+fn render_main_menu_options() {
+    for (key, label, description) in MAIN_MENU_OPTIONS {
+        ui::menu_item(key, label, description);
     }
 }
 
@@ -611,34 +668,136 @@ fn investigation_menu(
         terminal::clear_screen();
         ui::header("CURRENT SESSION", "Check a value or review results");
         ui::box_line("");
-        for (key, label, description) in INVESTIGATION_MENU_OPTIONS {
-            ui::menu_item(key, label, description);
-        }
+        render_investigation_menu_options();
         ui::box_line("");
         ui::close_box();
 
-        match terminal::read_input(editor, "\n  Select an option: ", false).as_str() {
-            "1" => file_workflow::check_indicator(editor, client, auth_key, investigation),
-            "2" => file_workflow::view_indicators(investigation),
-            "0" => break,
-            _ => terminal::invalid_choice(),
+        let selection = terminal::read_input(editor, "\n  Select an option: ", false);
+        match session_menu_action(&selection) {
+            Some(SessionMenuAction::CheckValue) => {
+                file_workflow::check_indicator(editor, client, auth_key, investigation)
+            }
+            Some(SessionMenuAction::Review) => file_workflow::view_indicators(investigation),
+            Some(SessionMenuAction::Save) => save_session_report(editor, investigation),
+            Some(SessionMenuAction::Back) => break,
+            None => terminal::invalid_choice(),
         }
+    }
+}
+
+fn render_investigation_menu_options() {
+    for (key, label, description) in INVESTIGATION_MENU_OPTIONS {
+        ui::menu_item(key, label, description);
+    }
+}
+
+fn save_session_report(editor: &mut InputEditor, investigation: &Investigation) {
+    if !investigation.has_completed_checks() {
+        terminal::show_error("There are no completed checks to save in this session yet.");
+        return;
+    }
+
+    terminal::clear_screen();
+    ui::header("SAVE CURRENT SESSION", "Create Markdown and JSON copies");
+    ui::box_line("The report includes every completed file and value check in this session.");
+    ui::warning("Reports may contain sensitive indicators and provider evidence.");
+    ui::navigation_footer("0", "Cancel");
+    ui::close_box();
+    let answer = terminal::read_input(editor, "  Save session report? [y/N]: ", false);
+    if !matches!(answer.to_ascii_lowercase().as_str(), "y" | "yes") {
+        return;
+    }
+
+    let report = investigation.session_report();
+    match crate::report::save_session_report(&report, std::path::Path::new("reports")) {
+        Ok((json, markdown)) => {
+            terminal::clear_screen();
+            ui::header(
+                "SESSION REPORTS SAVED",
+                "Current session evidence stored locally",
+            );
+            ui::field("JSON report", json.display());
+            ui::field("Markdown report", markdown.display());
+            ui::navigation_footer("Enter", "Return to Current Session");
+            ui::close_box();
+            terminal::pause();
+        }
+        Err(error) => terminal::show_error(&format!("Could not save session report: {error}")),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{INVESTIGATION_MENU_OPTIONS, MORE_MENU_OPTIONS};
+    use super::{
+        INVESTIGATION_MENU_OPTIONS, MAIN_MENU_OPTIONS, MORE_MENU_OPTIONS, MainMenuAction,
+        SessionMenuAction, main_menu_action, render_investigation_menu_options,
+        render_main_menu_options, session_menu_action,
+    };
 
     #[test]
     fn investigation_menu_has_review_and_indicator_actions_without_duplicate_file_check() {
+        crate::ui::reset_screen();
+        render_investigation_menu_options();
+        let rendered = crate::ui::recorded_line_texts().join("\n");
+        assert!(rendered.contains("Check a Value"));
+        assert!(rendered.contains("Review This Session"));
+        assert!(rendered.contains("Save This Session"));
+
         let labels: Vec<&str> = INVESTIGATION_MENU_OPTIONS
             .iter()
             .map(|(_, label, _)| *label)
             .collect();
 
-        assert_eq!(labels, ["Check a Value", "Review This Session", "Back"]);
+        assert_eq!(
+            labels,
+            [
+                "Check a Value",
+                "Review This Session",
+                "Save This Session",
+                "Back"
+            ]
+        );
         assert!(!labels.contains(&"Check a File"));
+    }
+
+    #[test]
+    fn main_menu_reaches_file_checks_current_session_and_saved_reports() {
+        crate::ui::reset_screen();
+        render_main_menu_options();
+        let rendered = crate::ui::recorded_line_texts().join("\n");
+
+        for label in ["Check a File", "Current Session", "Saved Reports"] {
+            assert!(rendered.contains(label), "missing menu action {label}");
+        }
+        assert_eq!(
+            MAIN_MENU_OPTIONS
+                .iter()
+                .map(|(_, label, _)| *label)
+                .collect::<Vec<_>>(),
+            [
+                "Check a File",
+                "Current Session",
+                "Search Logs",
+                "Saved Reports",
+                "More Tools"
+            ]
+        );
+        assert_eq!(main_menu_action("1"), Some(MainMenuAction::CheckFile));
+        assert_eq!(main_menu_action("2"), Some(MainMenuAction::CurrentSession));
+        assert_eq!(main_menu_action("4"), Some(MainMenuAction::SavedReports));
+        assert_eq!(main_menu_action("invalid"), None);
+    }
+
+    #[test]
+    fn current_session_actions_route_check_review_save_and_back() {
+        assert_eq!(
+            session_menu_action("1"),
+            Some(SessionMenuAction::CheckValue)
+        );
+        assert_eq!(session_menu_action("2"), Some(SessionMenuAction::Review));
+        assert_eq!(session_menu_action("3"), Some(SessionMenuAction::Save));
+        assert_eq!(session_menu_action("0"), Some(SessionMenuAction::Back));
+        assert_eq!(session_menu_action("invalid"), None);
     }
 
     #[test]
