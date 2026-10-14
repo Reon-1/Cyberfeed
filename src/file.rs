@@ -143,8 +143,7 @@ fn decode_file_uri(input: &str) -> Option<PathBuf> {
     #[cfg(windows)]
     let path = {
         let path = path.replace('\\', "/");
-        let path = path
-            .strip_prefix('/')
+        path.strip_prefix('/')
             .filter(|path| {
                 let bytes = path.as_bytes();
                 bytes.len() >= 3
@@ -153,8 +152,7 @@ fn decode_file_uri(input: &str) -> Option<PathBuf> {
                     && bytes[2] == b'/'
             })
             .unwrap_or(&path)
-            .to_owned();
-        return Some(PathBuf::from(path));
+            .to_owned()
     };
     Some(PathBuf::from(path))
 }
