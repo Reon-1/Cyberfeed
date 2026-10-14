@@ -424,14 +424,18 @@ fn compare_indicator_checks(editor: &mut InputEditor, reports: &[report_files::S
     terminal::clear_screen();
     view::indicator_comparison_screen(
         types[type_index].as_str(),
-        &older.indicator.value,
-        &newer.indicator.value,
-        &older.source,
-        older.generated_at,
-        &older.provider_lookups,
-        &newer.source,
-        newer.generated_at,
-        &newer.provider_lookups,
+        view::IndicatorCheck {
+            value: &older.indicator.value,
+            source: &older.source,
+            time: older.generated_at,
+            lookups: &older.provider_lookups,
+        },
+        view::IndicatorCheck {
+            value: &newer.indicator.value,
+            source: &newer.source,
+            time: newer.generated_at,
+            lookups: &newer.provider_lookups,
+        },
     );
     let _ = terminal::read_input(editor, "\n  Press Enter to continue: ", false);
 }

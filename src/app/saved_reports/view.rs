@@ -94,45 +94,46 @@ pub(super) fn report_list(collection: &ReportCollection) {
     ui::close_box();
 }
 
+pub(super) struct IndicatorCheck<'a> {
+    pub(super) value: &'a str,
+    pub(super) source: &'a str,
+    pub(super) time: u64,
+    pub(super) lookups: &'a [crate::report::ProviderLookup],
+}
+
 pub(super) fn indicator_comparison_screen(
     indicator_type: &str,
-    older_value: &str,
-    newer_value: &str,
-    older_source: &str,
-    older_time: u64,
-    older: &[crate::report::ProviderLookup],
-    newer_source: &str,
-    newer_time: u64,
-    newer: &[crate::report::ProviderLookup],
+    older: IndicatorCheck<'_>,
+    newer: IndicatorCheck<'_>,
 ) {
     ui::header(
         "INDICATOR COMPARISON",
         "Recorded results · offline · read-only",
     );
     ui::field("Type", indicator_type);
-    ui::field("Older value", terminal_safe(older_value));
-    ui::field("Newer value", terminal_safe(newer_value));
+    ui::field("Older value", terminal_safe(older.value));
+    ui::field("Newer value", terminal_safe(newer.value));
     ui::section("SAVED CHECKS");
     ui::field(
         "Older",
         format!(
             "{} · {}",
-            terminal_safe(older_source),
-            format_timestamp(older_time)
+            terminal_safe(older.source),
+            format_timestamp(older.time)
         ),
     );
     ui::field(
         "Newer",
         format!(
             "{} · {}",
-            terminal_safe(newer_source),
-            format_timestamp(newer_time)
+            terminal_safe(newer.source),
+            format_timestamp(newer.time)
         ),
     );
-    if older_value.eq_ignore_ascii_case(newer_value) {
+    if older.value.eq_ignore_ascii_case(newer.value) {
         ui::section("PROVIDER OUTCOME COMPARISON");
         let mut seen = Vec::<(String, String)>::new();
-        for lookup in older.iter().chain(newer) {
+        for lookup in older.lookups.iter().chain(newer.lookups) {
             let key = (
                 lookup.provider.clone(),
                 lookup.queried_hash.to_ascii_lowercase(),
@@ -141,10 +142,10 @@ pub(super) fn indicator_comparison_screen(
                 continue;
             }
             seen.push(key.clone());
-            let old = older.iter().find(|item| {
+            let old = older.lookups.iter().find(|item| {
                 item.provider == key.0 && item.queried_hash.eq_ignore_ascii_case(&key.1)
             });
-            let new = newer.iter().find(|item| {
+            let new = newer.lookups.iter().find(|item| {
                 item.provider == key.0 && item.queried_hash.eq_ignore_ascii_case(&key.1)
             });
             let old_status = old.map(|item| item.outcome.status());
@@ -161,14 +162,14 @@ pub(super) fn indicator_comparison_screen(
                 outcome,
             );
         }
-        if older.is_empty() && newer.is_empty() {
+        if older.lookups.is_empty() && newer.lookups.is_empty() {
             ui::field("Providers", "No outcomes were recorded for either check");
         }
     } else {
         ui::section("OLDER INDICATOR OUTCOMES");
-        render_indicator_outcomes(older);
+        render_indicator_outcomes(older.lookups);
         ui::section("NEWER INDICATOR OUTCOMES");
-        render_indicator_outcomes(newer);
+        render_indicator_outcomes(newer.lookups);
     }
     ui::note("NOT FOUND means no matching record was returned; it is not a safety verdict.");
     ui::navigation_footer("Enter", "Return to Saved Reports");
@@ -764,14 +765,18 @@ mod tests {
         crate::ui::reset_screen();
         indicator_comparison_screen(
             "HASH",
-            "same-hash",
-            "SAME-HASH",
-            "cyberfeed-session-1.json",
-            100,
-            &older,
-            "cyberfeed-indicator-HASH-example-200.json",
-            200,
-            &newer,
+            IndicatorCheck {
+                value: "same-hash",
+                source: "cyberfeed-session-1.json",
+                time: 100,
+                lookups: &older,
+            },
+            IndicatorCheck {
+                value: "SAME-HASH",
+                source: "cyberfeed-indicator-HASH-example-200.json",
+                time: 200,
+                lookups: &newer,
+            },
         );
         let rendered = crate::ui::recorded_rendered_lines_for_rows(100, 30).join("\n");
         assert!(rendered.contains("INDICATOR COMPARISON"));
@@ -797,14 +802,18 @@ mod tests {
         crate::ui::reset_screen();
         indicator_comparison_screen(
             "HASH",
-            "older-hash",
-            "newer-hash",
-            "cyberfeed-session-1.json",
-            100,
-            &older,
-            "cyberfeed-indicator-HASH-newer-200.json",
-            200,
-            &newer,
+            IndicatorCheck {
+                value: "older-hash",
+                source: "cyberfeed-session-1.json",
+                time: 100,
+                lookups: &older,
+            },
+            IndicatorCheck {
+                value: "newer-hash",
+                source: "cyberfeed-indicator-HASH-newer-200.json",
+                time: 200,
+                lookups: &newer,
+            },
         );
         let rendered = crate::ui::recorded_rendered_lines_for_rows(100, 32).join("\n");
         assert!(rendered.contains("Older value : older-hash"));
