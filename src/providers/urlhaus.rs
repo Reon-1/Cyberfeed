@@ -12,6 +12,7 @@ use std::time::Duration;
 const URL_ENDPOINT: &str = "https://urlhaus-api.abuse.ch/v1/url/";
 const HOST_ENDPOINT: &str = "https://urlhaus-api.abuse.ch/v1/host/";
 const PAYLOAD_ENDPOINT: &str = "https://urlhaus-api.abuse.ch/v1/payload/";
+#[cfg(test)]
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(15);
 // Ten automatic calls at this per-response ceiling remain comfortably below
 // the 32 MiB saved-report limit even before normal JSON overhead.
@@ -190,10 +191,20 @@ fn is_supported_host(host: &str) -> bool {
 
 /// Perform one passive lookup. Missing credentials are handled before any
 /// request is built or sent; the local file or URL is never fetched/uploaded.
+#[cfg(test)]
 pub fn lookup_indicator(
     client: &Client,
     auth_key: Option<&str>,
     indicator: &Indicator,
+) -> Result<UrlhausLookupResult, UrlhausError> {
+    lookup_indicator_with_timeout(client, auth_key, indicator, LOOKUP_TIMEOUT)
+}
+
+pub(crate) fn lookup_indicator_with_timeout(
+    client: &Client,
+    auth_key: Option<&str>,
+    indicator: &Indicator,
+    timeout: Duration,
 ) -> Result<UrlhausLookupResult, UrlhausError> {
     let (kind, value) = match query_for_indicator(indicator) {
         Ok(query) => query,
@@ -202,7 +213,7 @@ pub fn lookup_indicator(
     let Some(auth_key) = auth_key.filter(|key| !key.trim().is_empty()) else {
         return Ok(UrlhausLookupResult::NotConfigured);
     };
-    let request = build_request(client, auth_key, kind, value)
+    let request = build_request_with_timeout(client, auth_key, kind, value, timeout)
         .map_err(|error| UrlhausError::Request(format!("could not build request: {error}")))?;
     let response = client.execute(request).map_err(|error| {
         let timed_out = error.is_timeout();
@@ -246,16 +257,27 @@ fn request_error(is_timeout: bool, explanation: String) -> UrlhausError {
     }
 }
 
+#[cfg(test)]
 fn build_request(
     client: &Client,
     auth_key: &str,
     kind: QueryKind,
     value: &str,
 ) -> Result<Request, reqwest::Error> {
+    build_request_with_timeout(client, auth_key, kind, value, LOOKUP_TIMEOUT)
+}
+
+fn build_request_with_timeout(
+    client: &Client,
+    auth_key: &str,
+    kind: QueryKind,
+    value: &str,
+    timeout: Duration,
+) -> Result<Request, reqwest::Error> {
     let (endpoint, field) = kind.endpoint_and_field();
     client
         .post(endpoint)
-        .timeout(LOOKUP_TIMEOUT)
+        .timeout(timeout)
         .header("Auth-Key", auth_key)
         .header(reqwest::header::CONNECTION, "close")
         .form(&[(field, value)])

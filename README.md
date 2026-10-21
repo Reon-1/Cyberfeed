@@ -1,65 +1,24 @@
 # CyberFeed
 
-CyberFeed is a Rust-based defensive threat-intelligence investigation CLI. It starts with a local file or an indicator, gathers related evidence from local inspection and selected public intelligence sources, and keeps the results available for review without treating them as an automatic malware verdict.
+CyberFeed is a local-first Rust terminal tool for examining suspicious files, checking indicators against free public threat-intelligence sources, and keeping investigation evidence in readable reports.
 
-## Screenshots
+It helps you collect and review evidence. It is not antivirus software and does not decide that a file is safe or malicious. CyberFeed never executes inspected files or visits URLs found in evidence.
 
-**Main menu**
+## What you can do
 
-![CyberFeed main menu](docs/screenshots/main-menu.png)
+- **Check a file:** calculate its SHA-256 locally, extract supported hashes, IP addresses, domains, and HTTP/HTTPS URLs from readable content, and optionally check supported values with configured providers. The file itself is not uploaded.
+- **Search an indicator:** check a hash, IP address, domain, or full HTTP/HTTPS URL and review provider-specific evidence.
+- **Compare indicator lists:** in **Current Session**, add two or more line-oriented text files for a local overlap preview, then pivot a selected value into Value Search. Use one indicator per line; blank lines and lines beginning with `#` are ignored. Each file is limited to 8 MiB, lines to 4,096 bytes, the import to 100,000 candidates, and URLs to 1,000. The preview retains source lines while open; it does not upload files.
+- **Search a log:** extract indicators from local UTF-8 text or JSONL while preserving line and context provenance. Log hunting is local-only.
+- **Save and revisit evidence:** store file and session investigations as JSON/Markdown pairs, browse them offline, compare reports, and export eligible indicators as STIX 2.1.
+- **Use local tools:** try the offline demo, inspect setup, or batch-check up to 100 files without provider lookups.
+- **Browse public feeds:** view MalwareBazaar samples and Cloudflare Radar attack trends. Cloudflare country rows show a flag when the ISO code is recognized, with the country name and code retained as text.
 
-**File input**
+Provider results describe the queried value, not necessarily the file it came from. `NOT FOUND` means that source returned no record at lookup time; it does not establish safety. Errors, unsupported checks, missing credentials, and skipped requests remain distinct from a no-match.
 
-![Local file input prompt with the file handling notice](docs/screenshots/file-input.png)
+## Quick start
 
-**Completed investigation**
-
-![Completed file investigation overview](docs/screenshots/investigation-overview.png)
-
-**Indicator evidence**
-
-![Detailed provider evidence for an indicator](docs/screenshots/indicator-details.png)
-
-**Saved reports**
-
-![Saved reports browser](docs/screenshots/saved-reports.png)
-
-**Report comparison**
-
-![Offline report comparison showing different file contents and saved evidence](docs/screenshots/report-comparison.png)
-
-**Report save prompt**
-
-![Prompt to save local investigation evidence](docs/screenshots/report-save.png)
-
-*The investigation, details, report list, and comparison screenshots use reports created by the application from a harmless local sample containing a reserved `.invalid` URL. Provider credentials were absent, so no provider requests were made. The report browser reads saved JSON reports locally and compares them offline.*
-
-## Features
-
-- Inspect a local file as data, calculate its SHA-256 with streamed reads, and extract unique MD5, SHA-1, and SHA-256 hashes, IP addresses, domains, and HTTP/HTTPS URLs from readable text.
-- Query MalwareBazaar, ThreatFox, and URLhaus for the indicator types each supports. URLhaus accepts exact URLs, IPv4/domain/hostname host queries, and MD5/SHA-256 payload hashes. Duplicate provider queries do not cause duplicate requests.
-- Browse MalwareBazaar recent-sample feeds with optional country filtering, or view Cloudflare Radar Layer 7 attack telemetry.
-- Follow live file-lookup progress, review provider outcomes, page through indicators, and open detailed recorded evidence.
-- Resize the terminal while CyberFeed is open; the active screen redraws and the current prompt text is retained.
-- Save paired Markdown and JSON file-investigation reports or a report of all completed checks in the current session; browse saved reports and compare file investigations offline when they refer to the same file SHA-256.
-- Run an offline demo and local setup diagnostics from the main menu; diagnostics report credential presence only and do not contact providers.
-- Batch inspect up to 100 selected files or one directory level at a time, saving a local report per readable file. Batch mode performs local extraction only.
-- Export locally extracted IP, domain, URL, and common hash indicators from a saved report as a STIX 2.1 JSON bundle. The export describes observed indicators and makes no file-maliciousness claim.
-- Hunt ordinary UTF-8 text and JSON Lines logs incrementally, retaining line numbers and bounded context for each occurrence. This is format-agnostic token extraction, not vendor-specific parsing.
-
-## How an investigation works
-
-1. Choose **Check a File** and enter, paste, or drag in a path. CyberFeed reads the file locally, hashes it, and scans readable text for supported indicators; it never executes the file.
-2. Review the original file hash separately from indicators extracted from its contents. When configured, the relevant provider receives the hash or supported indicator value for lookup; file contents are not uploaded.
-3. Inspect provider outcomes and available match metadata, then optionally save the evidence as a report.
-
-`NOT FOUND` means that a provider returned no record for that query; it is not proof of safety. Provider errors, unsupported values, missing configuration, and skipped lookups remain distinct outcomes. A match describes the queried indicator and does not by itself establish that the source file is malicious.
-
-A **hash** is a fixed-length fingerprint of file contents; an **indicator** is a value such as a hash, address, domain, or URL that can be checked against public records. A provider lookup is a query to one of those sources. When comparing reports, a matching file SHA-256 means both reports describe the same contents. Different hashes describe different contents and do not show which file came first. A newly recorded provider match is new evidence in the report, not proof that a threat appeared between the reports; missing or failed checks do not prove that a record or threat disappeared.
-
-## Requirements and installation
-
-Install Rust and Cargo with support for the Rust 2024 edition. From a checkout, build and start CyberFeed with:
+Install stable Rust with Cargo, then run from a checkout:
 
 ```sh
 git clone https://github.com/Reon-1/Cyberfeed.git
@@ -67,65 +26,54 @@ cd Cyberfeed
 cargo run
 ```
 
-No provider credentials are required for local inspection or offline report browsing.
-The CI workflow runs formatting, compilation, tests, and Clippy on stable Rust for Linux, macOS, and Windows. This checkout has been validated locally on Linux; the other jobs must pass before those platforms are considered verified.
+No credentials are needed for local file inspection, logs, the offline demo, or saved-report browsing. The main menu offers file investigation, the current session, log search, saved reports, and **More Tools**. Navigate with arrows or `j`/`k`, choose with Enter or a number, and use Esc to go back. In Saved Reports, `N`/`P` changes pages.
 
-## Configuration
+## Provider setup
 
-CyberFeed reads optional credentials from environment variables or a local `.env` file. The repository's `.env.example` contains placeholders; keep real values in your private `.env`, which is ignored by Git.
+Threat lookups and live feeds are optional. Configure credentials in **More Tools → Configure Providers**, or provide environment variables:
 
-Use **More Tools → Configure Providers** to add, replace, or remove credentials without editing the file manually. Input is hidden, and CyberFeed never tests credentials automatically. Saving requires confirmation because `.env` stores plaintext secrets. On Unix the file is created with owner-only permissions; Windows file ACLs follow the current account and are not explicitly hardened by CyberFeed. Restart after a change. Environment variables supplied outside `.env` take precedence over saved values.
-
-| Variable | Provider |
+| Variable | Used by |
 | --- | --- |
-| `ABUSECH_AUTH_KEY` | Shared by MalwareBazaar, ThreatFox, and URLhaus |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare Radar, configured independently |
+| `ABUSECH_AUTH_KEY` | MalwareBazaar, ThreatFox, and URLhaus |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare Radar |
 
-If a provider's credential is absent, its lookup is recorded as not configured. See the official [MalwareBazaar API](https://bazaar.abuse.ch/api/), [ThreatFox API](https://threatfox.abuse.ch/api/), [URLhaus API](https://urlhaus-api.abuse.ch/), and [Cloudflare Radar API](https://developers.cloudflare.com/radar/) documentation.
+Credential entry is hidden. CyberFeed reports whether a credential is present but does not authenticate it during setup. The `.env` file stores saved credentials as plaintext; keep it private. Environment variables take precedence over `.env`; restart CyberFeed after changing credentials. `.env.example` contains placeholders only.
 
-## Using the menus
+CyberFeed routes only supported indicator types to each provider. URLhaus checks exact URLs, IP/domain hosts, and MD5/SHA-256 payload hashes; MalwareBazaar and ThreatFox have different supported types. Provider coverage and availability vary. No paid account is required by CyberFeed, though providers may apply their own access limits.
 
-- **Check a File** starts local inspection and provider lookups. Use the displayed number to open indicator evidence, `N`/`P` to change overview pages, `F` for the original file's hash result, and `0` to continue to the report-saving prompt.
-- **Current Session** lets you check a hash, IP address, domain, or HTTP/HTTPS URL, review accumulated evidence, and choose **Save This Session** to save all completed file and value checks together. Actionable diagnostics explain rejected formats (such as unsupported hash lengths or malformed URLs/domains).
-- **More Tools** groups the offline demo, setup check, provider configuration, batch file check, and optional live threat feeds so the main menu stays short.
-- **Saved Reports** browses file and session reports. **Compare File Reports** is available when at least two valid file reports are present.
-- The main menu uses `1`–`5`; choose `0` to exit. Submenus use `0` to go back. At prompts, use the arrow keys to edit or browse input history, `Tab` to complete file paths, and `Ctrl+C` to return from the current prompt. Credential entry is hidden; `Esc` or `Ctrl+C` cancels it. Resizing redraws the active screen without submitting input.
-- **Offline Demo** shows explicitly simulated training data without network access. **Check Setup** reports credential presence (not authentication) and report-directory access. **Configure Providers** edits the two supported `.env` keys with hidden input and confirmation. **Batch Check Files** accepts semicolon-separated paths or one directory (non-recursive), inspects at most 100 files, and saves a report per readable file without running lookups.
-- File investigations open a **Quick Summary** first. Choose `D` to review detailed indicator and provider evidence from the same recorded results, then `0` to continue to the report-saving prompt.
-- **Search Logs** accepts UTF-8 text or JSONL input and streams at most 64 MiB, 16 KiB per line, 1,000 unique indicators, and 10,000 source occurrences. It stores line numbers and context in the usual JSON/Markdown report pair. Log hunting currently performs no provider enrichment.
-- In a saved report view, enter `S` to write a STIX 2.1 bundle under `reports/stix/`. Unsupported or malformed indicator values are omitted.
+## Example workflows
 
-An optional independent STIX check can be run after installing the OASIS validator separately: `pip install stix2-validator`, then `stix2_validator reports/stix/<bundle>.stix.json`. CyberFeed's automated tests do not require this tool; external validation has not been performed as part of the build.
+1. Choose **Check a File**, enter a local path, review the file hash and extracted indicators, then open recorded provider details or save the report.
+2. Choose **Current Session → Check a Value** to examine a hash, address, domain, or full web address. CyberFeed shows provider coverage first; press `D` for technical evidence, then `0` to continue to the optional individual-check save prompt. Completed checks can also be saved together as a session report.
+3. Choose **Current Session → Compare Indicator Lists** to compare local lists and choose an indicator for a fresh provider lookup. This workflow does not persist the import queue or source-line provenance in a report; save the resulting value checks as ordinary session evidence.
+4. Choose **Search Logs** and enter a local text or JSONL path. The scan is bounded to 64 MiB total, 16 KiB per line, 1,000 unique indicators, and 10,000 occurrences. Results include source line and context; they do not trigger provider requests.
+5. Open **Saved Reports** to review file and session reports offline. File comparison requires matching file identity to compare the same contents; missing or failed provider coverage is inconclusive. A saved report can export eligible indicators as STIX 2.1.
 
-## Reports, privacy, and limits
+File investigation performs local extraction before bounded provider lookups. The inspection and sequential provider checks share a 60-second analysis budget; each provider request is also capped at 15 seconds. If the budget expires, completed evidence is retained and unfinished checks are marked as timed out or skipped. Cloudflare Radar displays a request-in-progress state and each complete endpoint response when available; the endpoint does not stream individual rows.
 
-Choosing to save a file investigation writes a JSON and a Markdown file-scoped report under `reports/` relative to the current working directory. **Current Session → Save This Session** writes a separate session report containing each completed file investigation and independent value check, including each check's recorded provider evidence. Both report types can be reopened offline through Saved Reports; comparison remains for file reports. Manually checked indicators are not added to a file-scoped report. Reports can contain sensitive indicators and hashes, so keep them private.
+## Reports and privacy
 
-On Unix, report files are created with owner-only read/write permissions. Saved JSON reports larger than 32 MiB are marked unavailable by the report browser; the size is enforced while reading, not only from file metadata.
+Reports are written under `reports/` in the current working directory. File reports and session reports remain separate: a file report records one file investigation, while a session report collects completed file and individual-value checks. Reports can contain sensitive paths, hashes, and indicators, so protect the directory. Report loading is bounded and reports are read locally; malformed or unsupported files are surfaced as unavailable rather than treated as findings.
 
-The file itself is not sent to providers. Configured lookups send the original file SHA-256 and supported extracted indicator values to the relevant API. When an IP endpoint with a port (such as `185.112.146.10:8080` or `[2001:db8::1]:8080`) is encountered in file text, CyberFeed extracts the underlying host IP address for lookup; passive threat-intelligence providers index indicators by IP address, not transport port, and CyberFeed records the queried IP indicator rather than claiming an exact IP-and-port lookup was performed. MalwareBazaar checks MD5, SHA-1, and SHA-256 hashes; its successful response bodies are capped at 16 MiB. ThreatFox accepts MD5 and SHA-256 hashes, IP addresses, domains, and exact full HTTP/HTTPS URLs using `search_ioc` with `exact_match: true` (SHA-1 is unsupported). URLhaus uses the shared `ABUSECH_AUTH_KEY`: its exact URL endpoint checks the complete URL including path/query, its host endpoint discovers URLs associated with an IPv4 address or domain/hostname, and its payload endpoint accepts MD5 or SHA-256 (not SHA-1). Exact URL lookups and host lookups are distinct observations. URLhaus returns at most 100 associated URL records per host response; each response body is limited to 1 MiB, and extracted URLs are limited to 2,048 bytes. MalwareBazaar and ThreatFox each have a ten-unique-lookup automatic cap per file; URLhaus file investigations have a ten-request overall cap. A round-robin scheduler reserves at most four payload-hash calls (including the original file SHA-256), three explicit-host calls, three exact-URL calls, and three URL-derived-host calls; identical host endpoint requests are deduplicated across explicit and URL-derived sources. The original file hash uses one slot for each applicable provider, duplicate queries are suppressed, and unqueried values are reported as skipped rather than not found. Local extraction is capped at 10,000 total indicators and 1,000 URLs, with the first reached cap stopping extraction. URLhaus focuses on malware-distribution URLs and is not a universal domain/IP reputation service. Offline URLs remain historical evidence. Provider availability and public-data coverage vary; a no-match result is not proof of safety, and an API failure is not a no-match result.
+## Project map
 
-## Project structure
-
-- `src/app/` coordinates menus, file investigations, provider views, and saved-report navigation.
-- `src/file.rs`, `src/indicator.rs`, and `src/investigation.rs` handle local inspection, classification, and collected evidence.
-- `src/providers/` contains the MalwareBazaar, ThreatFox, URLhaus, and Cloudflare clients; each module owns its provider request and response parsing.
-- `src/report/` models, renders, and stores reports; `src/ui.rs` and `src/app/terminal.rs` provide terminal presentation and input.
-
-
-Within file investigations, `src/app/file_workflow/lookups.rs` owns provider request scheduling, automatic lookup limits, deduplication, and conversion into the shared recorded-outcome model. The surrounding workflow handles terminal interaction and report prompts. A new lookup provider should keep its request format and parsing in its provider module, then map its result into the shared evidence outcomes at this workflow boundary; existing providers share the abuse.ch key but keep distinct request and response handling.
+- `src/app/` — menus and investigation workflows.
+- `src/tui/` — Ratatui rendering, shared styles, components, and Crossterm terminal lifecycle.
+- `src/file.rs`, `src/indicator.rs`, `src/investigation.rs` — local inspection and evidence models.
+- `src/providers/` — provider-specific HTTP requests and response parsing.
+- `src/report/` — report models, rendering, persistence, and STIX export.
 
 ## Development
+
+Automated tests use local data and do not require credentials or live providers. Run the project checks with:
 
 ```sh
 cargo fmt --check
 cargo check --all-targets
 cargo test
-cargo build
 cargo clippy --all-targets --all-features -- -D warnings
+cargo doc --no-deps
 git diff --check
 ```
 
-Tests use deterministic local data and do not require credentials or live provider requests.
-
-For a manual smoke test, configure your private `.env` with `ABUSECH_AUTH_KEY`, run `cargo run`, then choose **Investigation → Add indicator** and try one hash, IP/domain, and complete HTTP/HTTPS URL from your own test material. Results reflect current provider data; no positive outcome is expected, and the application does not fetch submitted URLs or upload files.
+The GitHub Actions workflow runs formatting, compilation, tests, and Clippy on stable Rust for Linux, macOS, and Windows. Only platforms actually exercised should be considered verified.

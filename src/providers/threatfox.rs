@@ -8,6 +8,7 @@ use std::io::Read;
 use std::time::Duration;
 
 pub const ENDPOINT: &str = "https://threatfox-api.abuse.ch/api/v1/";
+#[cfg(test)]
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -159,10 +160,20 @@ pub fn request_for_indicator(
     }
 }
 
+#[cfg(test)]
 pub fn lookup_indicator(
     client: &Client,
     auth_key: Option<&str>,
     indicator: &Indicator,
+) -> Result<ThreatFoxLookupResult, ThreatFoxError> {
+    lookup_indicator_with_timeout(client, auth_key, indicator, LOOKUP_TIMEOUT)
+}
+
+pub(crate) fn lookup_indicator_with_timeout(
+    client: &Client,
+    auth_key: Option<&str>,
+    indicator: &Indicator,
+    timeout: Duration,
 ) -> Result<ThreatFoxLookupResult, ThreatFoxError> {
     let request = match request_for_indicator(indicator) {
         Ok(request) => request,
@@ -171,7 +182,7 @@ pub fn lookup_indicator(
     let Some(auth_key) = auth_key.filter(|key| !key.trim().is_empty()) else {
         return Ok(ThreatFoxLookupResult::NotConfigured);
     };
-    let request = build_lookup_request(client, auth_key, &request)
+    let request = build_lookup_request_with_timeout(client, auth_key, &request, timeout)
         .map_err(|error| ThreatFoxError::Request(error.to_string()))?;
     let response = client.execute(request).map_err(|error| {
         let timed_out = error.is_timeout();
@@ -205,14 +216,24 @@ pub fn lookup_indicator(
 
 /// Build a lookup request without sending it, allowing header wiring to be
 /// tested using dummy credentials and no network connection.
+#[cfg(test)]
 pub(crate) fn build_lookup_request(
     client: &Client,
     auth_key: &str,
     request: &ThreatFoxRequest,
 ) -> Result<reqwest::blocking::Request, reqwest::Error> {
+    build_lookup_request_with_timeout(client, auth_key, request, LOOKUP_TIMEOUT)
+}
+
+pub(crate) fn build_lookup_request_with_timeout(
+    client: &Client,
+    auth_key: &str,
+    request: &ThreatFoxRequest,
+    timeout: Duration,
+) -> Result<reqwest::blocking::Request, reqwest::Error> {
     client
         .post(ENDPOINT)
-        .timeout(LOOKUP_TIMEOUT)
+        .timeout(timeout)
         .header("Auth-Key", auth_key)
         .header(reqwest::header::CONNECTION, "close")
         .json(&request)

@@ -6,7 +6,7 @@ mod view;
 use super::terminal::{self, InputEditor};
 use crate::indicator::{Indicator, IndicatorType};
 use crate::report::{InvestigationReport, ProviderLookup, SessionCheck, SessionReport};
-use crate::ui;
+use crate::tui;
 use std::io;
 use std::path::Path;
 
@@ -25,34 +25,42 @@ struct IndicatorReportCandidate {
 }
 
 pub(super) fn menu(editor: &mut InputEditor) {
+    let mut page_start = 0usize;
     loop {
         terminal::clear_screen();
-        ui::header("SAVED REPORTS", "Your saved investigations · newest first");
+        tui::header("SAVED REPORTS", "Your saved investigations · newest first");
         let collection = match report_files::discover(Path::new("reports")) {
             Ok(collection) => collection,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                ui::section("NO REPORT DIRECTORY");
-                ui::field("Location", "reports/ in the current working directory");
-                ui::box_line("Save a file or current-session report to create this directory.");
+                tui::section("NO REPORT DIRECTORY");
+                tui::field("Location", "reports/ in the current working directory");
+                tui::box_line("Save a file or current-session report to create this directory.");
                 return_to_parent();
                 terminal::pause();
                 break;
             }
             Err(error) => {
-                ui::section("COULD NOT READ REPORT DIRECTORY");
-                ui::field("Details", error);
+                tui::section("COULD NOT READ REPORT DIRECTORY");
+                tui::field("Details", error);
                 return_to_parent();
                 terminal::pause();
                 break;
             }
         };
 
-        view::report_list(&collection);
-        let selection = terminal::read_input(
+        let page_size = view::report_page_capacity(tui::terminal_dimensions().1);
+        let page_count = collection.reports.len().div_ceil(page_size).max(1);
+        let page_number = page_start / page_size + 1;
+        view::report_list(&collection, page_start, page_size);
+        let Some(selection) = terminal::read_input(
             editor,
-            "\n  Choose a report, C compare files, I compare indicators, or 0 to go back: ",
+            &format!(
+                "\n  Report number · N/P page {page_number}/{page_count} · C same-file comparison · I compare indicators · 0 back: "
+            ),
             false,
-        );
+        ) else {
+            break;
+        };
         if selection == "0" {
             break;
         }
@@ -64,7 +72,24 @@ pub(super) fn menu(editor: &mut InputEditor) {
             compare_indicator_checks(editor, &collection.reports);
             continue;
         }
-        match selected_index(&selection, collection.reports.len()) {
+        if selection.eq_ignore_ascii_case("n") {
+            let page_size = view::report_page_capacity(tui::terminal_dimensions().1);
+            if page_start + page_size < collection.reports.len() {
+                page_start += page_size;
+            }
+            continue;
+        }
+        if selection.eq_ignore_ascii_case("p") {
+            let page_size = view::report_page_capacity(tui::terminal_dimensions().1);
+            page_start = page_start.saturating_sub(page_size);
+            continue;
+        }
+        let visible_count = collection
+            .reports
+            .len()
+            .saturating_sub(page_start)
+            .min(page_size);
+        match selected_index(&selection, visible_count).map(|index| page_start + index) {
             Some(index) => {
                 let saved = &collection.reports[index];
                 if let report_files::SavedReportContents::Session(report) = &saved.contents {
@@ -75,11 +100,13 @@ pub(super) fn menu(editor: &mut InputEditor) {
                     let Some(report) = saved.contents.file_report() else {
                         unreachable!("session reports are opened in the session viewer")
                     };
-                    let action = terminal::read_input(
+                    let Some(action) = terminal::read_input(
                         editor,
                         "\n  Enter to return, or S to export STIX 2.1: ",
                         false,
-                    );
+                    ) else {
+                        continue;
+                    };
                     if action.eq_ignore_ascii_case("s") {
                         if crate::report::stix_indicator_count(report) == 0 {
                             terminal::show_error(
@@ -107,9 +134,8 @@ pub(super) fn menu(editor: &mut InputEditor) {
 fn browse_session_report(editor: &mut InputEditor, report: &SessionReport) {
     if report.checks.is_empty() {
         terminal::clear_screen();
-        ui::header("SAVED SESSION REPORT", "No completed checks were recorded");
-        ui::navigation_footer("Enter", "Return to Saved Reports");
-        ui::close_box();
+        tui::header("SAVED SESSION REPORT", "No completed checks were recorded");
+        tui::navigation_footer("Enter", "Return to Saved Reports");
         let _ = terminal::read_input(editor, "\n  Press Enter to return: ", false);
         return;
     }
@@ -118,14 +144,14 @@ fn browse_session_report(editor: &mut InputEditor, report: &SessionReport) {
     loop {
         terminal::clear_screen();
         view::session_check_screen(report, index);
-        match terminal::read_input(
+        let Some(selection) = terminal::read_input(
             editor,
             "\n  N next check · P previous check · Enter return: ",
             false,
-        )
-        .to_ascii_lowercase()
-        .as_str()
-        {
+        ) else {
+            break;
+        };
+        match selection.to_ascii_lowercase().as_str() {
             "n" if index + 1 < report.checks.len() => index += 1,
             "p" if index > 0 => index -= 1,
             "" | "0" => break,
@@ -200,19 +226,18 @@ fn compare_reports(editor: &mut InputEditor, reports: &[report_files::SavedRepor
         return;
     }
     terminal::clear_screen();
-    ui::header(
-        "COMPARE FILE REPORTS",
-        "Session reports are not file comparisons",
+    tui::header(
+        "COMPARE SAME-FILE REPORTS",
+        "Choose repeated investigations with the same SHA-256",
     );
     for (index, candidate) in candidates.iter().enumerate() {
-        ui::menu_item(
+        tui::menu_item(
             &(index + 1).to_string(),
             &candidate.title,
             &candidate.description,
         );
     }
-    ui::navigation_footer("0", "Cancel comparison");
-    ui::close_box();
+    tui::navigation_footer("0", "Cancel comparison");
     let Some(first) = prompt_report_index(
         editor,
         candidates.len(),
@@ -363,19 +388,18 @@ fn compare_indicator_checks(editor: &mut InputEditor, reports: &[report_files::S
         return;
     }
     terminal::clear_screen();
-    ui::header(
+    tui::header(
         "COMPARE INDICATOR CHECKS",
         "Choose a matching indicator type",
     );
     for (index, kind) in types.iter().enumerate() {
-        ui::menu_item(
+        tui::menu_item(
             &(index + 1).to_string(),
             kind.as_str(),
             "Compare two recorded checks; no lookups are performed",
         );
     }
-    ui::navigation_footer("0", "Cancel comparison");
-    ui::close_box();
+    tui::navigation_footer("0", "Cancel comparison");
     let Some(type_index) =
         prompt_report_index(editor, types.len(), "Indicator type number (0 to cancel): ")
     else {
@@ -383,19 +407,18 @@ fn compare_indicator_checks(editor: &mut InputEditor, reports: &[report_files::S
     };
     let candidates = indicator_comparison_candidates(reports, types[type_index]);
     terminal::clear_screen();
-    ui::header(
+    tui::header(
         "COMPARE INDICATOR CHECKS",
         "Select two saved checks of the same type",
     );
     for (index, candidate) in candidates.iter().enumerate() {
-        ui::menu_item(
+        tui::menu_item(
             &(index + 1).to_string(),
             &candidate.indicator.value,
             &candidate.description,
         );
     }
-    ui::navigation_footer("0", "Cancel comparison");
-    ui::close_box();
+    tui::navigation_footer("0", "Cancel comparison");
     let Some(first) = prompt_report_index(
         editor,
         candidates.len(),
@@ -442,7 +465,7 @@ fn compare_indicator_checks(editor: &mut InputEditor, reports: &[report_files::S
 
 fn prompt_report_index(editor: &mut InputEditor, count: usize, prompt: &str) -> Option<usize> {
     loop {
-        let input = terminal::read_input(editor, prompt, false);
+        let input = terminal::read_input(editor, prompt, false)?;
         if input == "0" {
             return None;
         }
@@ -462,8 +485,7 @@ fn selected_index(input: &str, count: usize) -> Option<usize> {
 }
 
 fn return_to_parent() {
-    ui::navigation_footer("0", "Return to the main menu");
-    ui::close_box();
+    tui::navigation_footer("0", "Return to the main menu");
 }
 
 #[cfg(test)]

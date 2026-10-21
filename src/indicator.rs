@@ -184,13 +184,52 @@ pub fn is_http_url(value: &str) -> bool {
     let Some(authority) = authority else {
         return false;
     };
-    if authority.is_empty() || authority.starts_with('/') {
+    let authority = authority.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty() {
+        return false;
+    }
+    if has_ambiguous_numeric_ipv4_host(authority) {
         return false;
     }
     let Ok(url) = reqwest::Url::parse(value) else {
         return false;
     };
     matches!(url.scheme(), "http" | "https") && url.host_str().is_some_and(|host| !host.is_empty())
+}
+
+/// WHATWG URL parsing accepts shortened, hexadecimal, and octal IPv4 forms
+/// and canonicalizes them. Reject numeric-only hosts unless they are already
+/// a canonical four-octet decimal address, so lookup never changes the target.
+fn has_ambiguous_numeric_ipv4_host(authority: &str) -> bool {
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    if authority.starts_with('[') {
+        // Bracketed IPv6 has colons and is validated by the URL parser below.
+        return false;
+    }
+    let host = authority.split(':').next().unwrap_or_default();
+    if host.is_empty() {
+        return false;
+    }
+    let parts = host.strip_suffix('.').unwrap_or(host).split('.');
+    let parts = parts.collect::<Vec<_>>();
+    let numeric_form = !parts.is_empty()
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && (part.bytes().all(|byte| byte.is_ascii_digit())
+                    || part == &"0x"
+                    || part == &"0X"
+                    || part
+                        .strip_prefix("0x")
+                        .or_else(|| part.strip_prefix("0X"))
+                        .is_some_and(|digits| digits.bytes().all(|byte| byte.is_ascii_hexdigit())))
+        });
+    if !numeric_form {
+        return false;
+    }
+    let Ok(address) = host.parse::<std::net::Ipv4Addr>() else {
+        return true;
+    };
+    address.to_string() != host
 }
 
 #[cfg(test)]

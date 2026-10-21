@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 pub struct FileInfo {
     pub name: String,
@@ -158,6 +159,17 @@ fn decode_file_uri(input: &str) -> Option<PathBuf> {
 }
 
 pub fn inspect_file(path: &Path) -> Result<FileInspection, String> {
+    inspect_file_until(path, None)
+}
+
+pub(crate) fn inspect_file_with_deadline(
+    path: &Path,
+    deadline: Instant,
+) -> Result<FileInspection, String> {
+    inspect_file_until(path, Some(deadline))
+}
+
+fn inspect_file_until(path: &Path, deadline: Option<Instant>) -> Result<FileInspection, String> {
     let metadata = std::fs::metadata(path)
         .map_err(|error| format!("Could not open '{}': {error}", path.display()))?;
 
@@ -175,6 +187,9 @@ pub fn inspect_file(path: &Path) -> Result<FileInspection, String> {
     let mut size = 0u64;
 
     loop {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err("File inspection exceeded the overall investigation time budget. No partial hash or report was saved.".into());
+        }
         let bytes_read = reader
             .read(&mut buffer)
             .map_err(|error| format!("Could not read '{}': {error}", path.display()))?;

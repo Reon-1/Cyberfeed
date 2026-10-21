@@ -55,6 +55,21 @@ fn extracts_hash_ip_and_domain_from_text_file() {
 }
 
 #[test]
+fn file_inspection_refuses_to_return_partial_evidence_after_deadline() {
+    let path = std::env::temp_dir().join(format!(
+        "cyberfeed-deadline-{}-{}.txt",
+        std::process::id(),
+        test_thread_name()
+    ));
+    fs::write(&path, "example.test").expect("test file should be writable");
+    let result = super::inspect_file_with_deadline(&path, std::time::Instant::now());
+    let _ = fs::remove_file(&path);
+    assert!(
+        matches!(result, Err(message) if message.contains("overall investigation time budget"))
+    );
+}
+
+#[test]
 fn extracts_url_and_all_payload_hash_lengths_without_losing_url_path_or_query() {
     let mut single = TextScanner::default();
     single.push_text("(https://Example.test/a/path?key=value&next=1),");

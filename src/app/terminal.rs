@@ -1,4 +1,4 @@
-use crate::ui;
+use crate::tui;
 use crossterm::cursor;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -13,6 +13,20 @@ pub(super) struct InputEditor {
     history_index: Option<usize>,
     saved_input: String,
     completer: FilenameCompleter,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum InputAction {
+    Submit,
+    Cancel,
+}
+
+fn input_action(key: KeyCode) -> Option<InputAction> {
+    match key {
+        KeyCode::Enter => Some(InputAction::Submit),
+        KeyCode::Esc => Some(InputAction::Cancel),
+        _ => None,
+    }
 }
 
 impl Default for InputEditor {
@@ -55,7 +69,7 @@ pub(super) fn read_secret(prompt: &str) -> Option<String> {
         Ok(raw_mode) => raw_mode,
         Err(_) => return None,
     };
-    print!("{}", ui::sanitize_terminal_text(prompt));
+    print!("{}", tui::sanitize_terminal_text(prompt));
     if io::stdout().flush().is_err() {
         return None;
     }
@@ -98,12 +112,16 @@ pub(super) fn read_secret(prompt: &str) -> Option<String> {
     }
 }
 
-pub(super) fn read_input(editor: &mut InputEditor, prompt: &str, path_completion: bool) -> String {
+pub(super) fn read_input(
+    editor: &mut InputEditor,
+    prompt: &str,
+    path_completion: bool,
+) -> Option<String> {
     let _raw_mode = match RawMode::enable() {
         Ok(raw_mode) => raw_mode,
         Err(error) => {
             eprintln!("Could not enable terminal input: {error}");
-            return String::from("\0");
+            return None;
         }
     };
     let prompt = prompt.to_owned();
@@ -122,7 +140,7 @@ pub(super) fn read_input(editor: &mut InputEditor, prompt: &str, path_completion
                 Ok(event) => Some(event),
                 Err(error) => {
                     eprintln!("Input error: {error}");
-                    return String::from("\0");
+                    return None;
                 }
             }
         };
@@ -136,24 +154,28 @@ pub(super) fn read_input(editor: &mut InputEditor, prompt: &str, path_completion
             Some(Event::Key(key))
                 if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
             {
-                let had_completion_choices = !completion_choices.is_empty();
-                match key.code {
-                    KeyCode::Enter => {
+                match input_action(key.code) {
+                    Some(InputAction::Submit) => {
                         let input = clean_editor_input(input, path_completion);
                         if !input.is_empty() && editor.history.last() != Some(&input) {
                             editor.history.push(input.clone());
                         }
                         editor.history_index = None;
-                        return input;
+                        return Some(input);
                     }
-                    KeyCode::Esc => {}
+                    Some(InputAction::Cancel) => return None,
+                    None => {}
+                }
+                let had_completion_choices = !completion_choices.is_empty();
+                match key.code {
+                    KeyCode::Enter | KeyCode::Esc => unreachable!("handled above"),
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return String::from("0");
+                        return None;
                     }
                     KeyCode::Char('d')
                         if key.modifiers.contains(KeyModifiers::CONTROL) && input.is_empty() =>
                     {
-                        return String::from("0");
+                        return None;
                     }
                     KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         cursor_index = 0
@@ -193,7 +215,9 @@ pub(super) fn read_input(editor: &mut InputEditor, prompt: &str, path_completion
                             } else {
                                 completion_choices = candidates
                                     .into_iter()
-                                    .map(|candidate| ui::sanitize_terminal_text(&candidate.display))
+                                    .map(|candidate| {
+                                        tui::sanitize_terminal_text(&candidate.display)
+                                    })
                                     .collect();
                             }
                         }
@@ -246,7 +270,7 @@ pub(super) fn read_input(editor: &mut InputEditor, prompt: &str, path_completion
                 );
             }
             Some(_) => {}
-            None => return String::from("\0"),
+            None => return None,
         }
     }
 }
@@ -279,29 +303,8 @@ fn history_move(
 }
 
 fn redraw_screen(prompt: &str, input: &str, cursor_index: usize, completion_choices: &[String]) {
-    let mut stdout = io::stdout();
-    let _ = execute!(stdout, Clear(ClearType::All), cursor::MoveTo(0, 0));
-    let (columns, rows) = ui::terminal_dimensions();
-    if ui::terminal_too_small((columns, rows)) {
-        for (row, message) in [
-            "Terminal too small to show the complete screen. Resize to at least 20×6.",
-            "The current input is preserved. Enter submits; Ctrl+C returns.",
-        ]
-        .iter()
-        .enumerate()
-        {
-            let _ = execute!(
-                stdout,
-                cursor::MoveTo(0, row as u16),
-                Clear(ClearType::CurrentLine)
-            );
-            let _ = write!(stdout, "{}", ui::sanitize_terminal_text(message));
-        }
-        ui::set_rendered_rows(2);
-        let _ = stdout.flush();
-    } else {
-        ui::redraw_current_screen_with_prompt();
-    }
+    tui::clear_terminal();
+    tui::redraw_current_screen_with_prompt();
     redraw_prompt(prompt, input, cursor_index, completion_choices, false);
 }
 
@@ -313,9 +316,9 @@ fn redraw_prompt(
     clear_completion_row: bool,
 ) {
     let mut stdout = io::stdout();
-    let (columns, rows) = ui::terminal_dimensions();
+    let (columns, rows) = tui::terminal_dimensions();
     let columns = columns.max(1);
-    let row = prompt_row(ui::rendered_rows(), rows).min(u16::MAX as usize) as u16;
+    let row = prompt_row(rows).min(u16::MAX as usize) as u16;
     if !completion_choices.is_empty() && rows > 1 {
         let choice_row = row.saturating_sub(1);
         let _ = execute!(
@@ -326,7 +329,7 @@ fn redraw_prompt(
         let choice_text = completion_choices.join("  ");
         print!(
             "{}",
-            ui::wrap_text(&choice_text, columns)
+            tui::wrap_text(&choice_text, columns)
                 .first()
                 .cloned()
                 .unwrap_or_default()
@@ -338,9 +341,9 @@ fn redraw_prompt(
             Clear(ClearType::CurrentLine)
         );
     }
-    let prompt = ui::align_prompt(prompt);
+    let prompt = tui::align_prompt(prompt);
     let prompt = prompt.rsplit('\n').next().unwrap_or(&prompt);
-    let prompt_width = ui::visible_width(prompt).min(columns.saturating_sub(1));
+    let prompt_width = tui::visible_width(prompt).min(columns.saturating_sub(1));
     let available = columns.saturating_sub(prompt_width);
     let (shown, cursor_offset) = input_window(input, cursor_index, available);
     let _ = execute!(
@@ -363,8 +366,8 @@ fn should_clear_completion_row(previously_shown: bool, currently_shown: bool) ->
     previously_shown && !currently_shown
 }
 
-fn prompt_row(screen_rows: usize, terminal_rows: usize) -> usize {
-    screen_rows.min(terminal_rows.saturating_sub(1))
+fn prompt_row(terminal_rows: usize) -> usize {
+    terminal_rows.saturating_sub(1)
 }
 
 fn input_window(input: &str, cursor_index: usize, width: usize) -> (String, usize) {
@@ -376,7 +379,7 @@ fn input_window(input: &str, cursor_index: usize, width: usize) -> (String, usiz
     let mut start = cursor_index;
     let mut left_width = 0;
     while start > 0 {
-        let next = ui::display_width(chars[start - 1]);
+        let next = tui::display_width(chars[start - 1]);
         if left_width + next > width {
             break;
         }
@@ -386,7 +389,7 @@ fn input_window(input: &str, cursor_index: usize, width: usize) -> (String, usiz
     let mut end = cursor_index;
     let mut used = left_width;
     while end < chars.len() {
-        let next = ui::display_width(chars[end]);
+        let next = tui::display_width(chars[end]);
         if used + next > width {
             break;
         }
@@ -432,9 +435,7 @@ fn clean_editor_input(input: String, path_completion: bool) -> String {
 }
 
 pub(super) fn clear_screen() {
-    ui::reset_screen();
-    print!("\x1B[2J\x1B[3J\x1B[H");
-    flush();
+    tui::reset_screen();
 }
 
 pub(super) fn pause() {
@@ -448,20 +449,18 @@ pub(super) fn invalid_choice() {
 
 pub(super) fn show_error(message: &str) {
     clear_screen();
-    ui::header("ERROR", "The requested action could not be completed");
-    ui::section("MESSAGE");
-    ui::error(message);
-    ui::close_box();
+    tui::header("ERROR", "The requested action could not be completed");
+    tui::section("MESSAGE");
+    tui::error(message);
     pause();
 }
 
 pub(super) fn show_source_error(error: &str) {
     clear_screen();
-    ui::header("THREAT FEEDS", "The live data source could not be loaded");
-    ui::section("REQUEST FAILED");
-    ui::error("The intelligence source returned an error.");
-    ui::field("Details", error);
-    ui::close_box();
+    tui::header("THREAT FEEDS", "The live data source could not be loaded");
+    tui::section("REQUEST FAILED");
+    tui::error("The intelligence source returned an error.");
+    tui::field("Details", error);
     pause();
 }
 
@@ -500,7 +499,7 @@ pub(super) fn wait_for_refresh(interval: Duration) -> bool {
                 Ok(Event::Resize(_, _)) => {
                     let mut stdout = io::stdout();
                     let _ = execute!(stdout, Clear(ClearType::All), cursor::MoveTo(0, 0));
-                    ui::redraw_current_screen();
+                    tui::redraw_current_screen();
                 }
                 Ok(_) => {}
                 Err(error) => {
@@ -517,18 +516,13 @@ pub(super) fn wait_for_refresh(interval: Duration) -> bool {
     }
 }
 
-fn flush() {
-    if let Err(error) = io::stdout().flush() {
-        eprintln!("Output error: {error}");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        InputEditor, clean_editor_input, history_move, input_window, prompt_row,
-        should_clear_completion_row,
+        InputAction, InputEditor, clean_editor_input, history_move, input_action, input_window,
+        prompt_row, should_clear_completion_row,
     };
+    use crossterm::event::KeyCode;
 
     #[test]
     fn path_input_keeps_spaces_but_removes_terminal_line_endings() {
@@ -560,11 +554,17 @@ mod tests {
     }
 
     #[test]
-    fn prompt_follows_the_screen_until_the_bottom_row_is_needed() {
-        assert_eq!(prompt_row(18, 24), 18);
-        assert_eq!(prompt_row(23, 24), 23);
-        assert_eq!(prompt_row(40, 24), 23);
-        assert_eq!(prompt_row(2, 0), 0);
+    fn prompt_uses_the_reserved_bottom_row_at_each_terminal_size() {
+        assert_eq!(prompt_row(24), 23);
+        assert_eq!(prompt_row(12), 11);
+        assert_eq!(prompt_row(0), 0);
+    }
+
+    #[test]
+    fn input_enter_submits_and_escape_cancels() {
+        assert_eq!(input_action(KeyCode::Enter), Some(InputAction::Submit));
+        assert_eq!(input_action(KeyCode::Esc), Some(InputAction::Cancel));
+        assert_eq!(input_action(KeyCode::Char('x')), None);
     }
 
     #[test]

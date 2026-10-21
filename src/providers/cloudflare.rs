@@ -13,9 +13,11 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 #[derive(Deserialize)]
 pub struct OriginCountry {
     #[serde(rename = "originCountryAlpha2")]
+    #[serde(default)]
     pub origin_country_alpha2: String,
 
     #[serde(rename = "originCountryName")]
+    #[serde(default)]
     pub origin_country_name: String,
 
     // Cloudflare sends the percentage as a string, so convert it to f64
@@ -33,9 +35,11 @@ pub struct TopOrigins {
 #[derive(Deserialize)]
 pub struct TargetCountry {
     #[serde(rename = "targetCountryAlpha2")]
+    #[serde(default)]
     pub target_country_alpha2: String,
 
     #[serde(rename = "targetCountryName")]
+    #[serde(default)]
     pub target_country_name: String,
 
     // Convert the percentage string into a number
@@ -53,15 +57,19 @@ pub struct TopTargets {
 #[derive(Deserialize)]
 pub struct AttackPair {
     #[serde(rename = "originCountryAlpha2")]
+    #[serde(default)]
     pub origin_country_alpha2: String,
 
     #[serde(rename = "originCountryName")]
+    #[serde(default)]
     pub origin_country_name: String,
 
     #[serde(rename = "targetCountryAlpha2")]
+    #[serde(default)]
     pub target_country_alpha2: String,
 
     #[serde(rename = "targetCountryName")]
+    #[serde(default)]
     pub target_country_name: String,
 
     // Convert the percentage string into a number
@@ -245,5 +253,17 @@ mod tests {
             r#"{"success":true,"result":{"top_0":[{"originCountryAlpha2":"NP","originCountryName":"Nepal","value":"NaN","rank":1}]}}"#,
         );
         assert!(response.is_err());
+    }
+
+    #[test]
+    fn country_metadata_may_be_missing_without_losing_the_record() {
+        let response: CloudflareResponse<TopOrigins> = serde_json::from_str(
+            r#"{"success":true,"result":{"top_0":[{"value":"12.5","rank":1}]}}"#,
+        )
+        .expect("optional location metadata should not discard a valid row");
+        let country = &response.result.top_0[0];
+        assert!(country.origin_country_alpha2.is_empty());
+        assert!(country.origin_country_name.is_empty());
+        assert_eq!(country.value, 12.5);
     }
 }

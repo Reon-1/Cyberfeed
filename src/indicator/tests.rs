@@ -50,11 +50,36 @@ fn classifies_only_well_formed_http_urls_as_url_indicators() {
         "ftp://example.test/file",
         "http:///missing-host",
         "https://",
+        "http://61.177.172",
+        "http://61.177.172/path",
+        "http://127.1",
+        "http://0x7f.0.0.1",
     ] {
         assert_ne!(
             classify(value, MANUAL_HASH_LENGTHS),
             Some(IndicatorType::Url)
         );
+    }
+}
+
+#[test]
+fn url_validation_preserves_canonical_ipv4_ipv6_ports_paths_and_queries() {
+    use super::is_http_url;
+
+    for value in [
+        "http://61.177.172.8/path",
+        "http://61.177.172.8:8080/path?download=1&name=a",
+        "https://[2001:db8::1]:8443/path?q=one",
+    ] {
+        assert!(is_http_url(value), "{value}");
+    }
+    for value in [
+        "http://61.177.172",
+        "http://61.177.172/path",
+        "http://127.1",
+        "http://0x7f.0.0.1",
+    ] {
+        assert!(!is_http_url(value), "{value}");
     }
 }
 

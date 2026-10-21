@@ -526,6 +526,23 @@ mod tests {
     }
 
     #[test]
+    fn version_four_report_loads_after_deadline_outcomes_are_added() {
+        let directory = TestDir::new();
+        let mut legacy = serde_json::to_value(report()).unwrap();
+        legacy["schema_version"] = serde_json::json!(4);
+        fs::write(
+            directory.0.join("v4.json"),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        let loaded = discover(&directory.0).unwrap();
+        assert_eq!(loaded.reports.len(), 1);
+        let report = loaded.reports[0].contents.file_report().unwrap();
+        assert_eq!(report.schema_version, SCHEMA_VERSION);
+        assert_eq!(report.file.sha256, "file-sha");
+    }
+
+    #[test]
     fn rejects_oversized_report_but_keeps_valid_neighbor() {
         let directory = TestDir::new();
         write_report(&directory.0, "valid.json", 1);

@@ -66,7 +66,7 @@ pub fn save_indicator_report(
     let stem = format!(
         "indicator-{}-{}",
         indicator.indicator_type.as_str(),
-        indicator.value.replace('.', "_")
+        safe_label(&indicator.value.replace('.', "_"))
     );
     save_document(
         &report,
@@ -275,7 +275,13 @@ fn safe_stem(filename: &str) -> String {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("file");
-    let s: String = stem
+    safe_label(stem)
+}
+
+// Indicator values are labels, never paths. Sanitize the complete value
+// before passing a derived label to `save_document`.
+fn safe_label(label: &str) -> String {
+    let s: String = label
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
@@ -287,4 +293,80 @@ fn safe_stem(filename: &str) -> String {
         .take(48)
         .collect();
     if s.is_empty() { "file".into() } else { s }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{safe_label, safe_stem, save_indicator_report};
+    use crate::indicator::{Indicator, IndicatorType};
+    use std::fs;
+    use std::path::PathBuf;
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "cyberfeed-storage-{}-{}",
+                std::process::id(),
+                crate::report::storage::TEMP_FILE_COUNTER
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn indicator_filenames_sanitize_the_whole_value_without_path_semantics() {
+        for (value, expected) in [
+            ("example.test", "example_test"),
+            ("192.0.2.1", "192_0_2_1"),
+            ("2001:db8::1", "2001_db8__1"),
+            (
+                "https://example.test/a?q=x#frag",
+                "https___example_test_a_q_x_frag",
+            ),
+        ] {
+            assert_eq!(safe_label(value), expected);
+        }
+        for (value, expected_len) in [
+            ("a".repeat(32), 32),
+            ("b".repeat(40), 40),
+            ("c".repeat(64), 48),
+        ] {
+            assert_eq!(safe_stem(&value).len(), expected_len);
+        }
+        assert!(!safe_stem("../目录\\CON:*?").contains('/'));
+        assert!(!safe_stem("../目录\\CON:*?").contains('\\'));
+        assert_eq!(safe_stem(""), "file");
+    }
+
+    #[test]
+    fn indicator_report_keeps_identity_and_collision_suffixes_distinct_values() {
+        let directory = TestDirectory::new();
+        let values = [
+            "https://example.test/a?q=x#frag",
+            "https://example.test/a?q?x#frag",
+        ];
+        let mut paths = Vec::new();
+        for value in values {
+            let indicator = Indicator::new(value, IndicatorType::Url);
+            let (json, markdown) = save_indicator_report(&indicator, &[], &directory.0).unwrap();
+            assert_eq!(json.parent(), Some(directory.0.as_path()));
+            assert_eq!(markdown.parent(), Some(directory.0.as_path()));
+            assert!(json.file_name().unwrap().to_string_lossy().len() < 100);
+            let content = fs::read_to_string(&json).unwrap();
+            assert!(content.contains(value));
+            paths.push(json);
+        }
+        assert_ne!(paths[0], paths[1]);
+        assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 4);
+    }
 }

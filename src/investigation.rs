@@ -1,6 +1,6 @@
 use crate::indicator::{Indicator, IndicatorType};
 use crate::report::{InvestigationReport, ProviderLookup, SessionCheck, SessionReport};
-use crate::ui;
+use crate::tui;
 use std::collections::HashSet;
 
 /// Indicators, provider observations, and completed checks from this CLI run.
@@ -42,16 +42,16 @@ impl Investigation {
 
     pub fn display_indicators(&self) {
         if self.indicators.is_empty() {
-            ui::box_line("  No indicators collected yet.");
-            ui::box_line("  Add a suspicious hash, IP, or domain to begin.");
+            tui::box_line("  No indicators collected yet.");
+            tui::box_line("  Add a suspicious hash, IP, or domain to begin.");
             return;
         }
 
-        ui::indicator_header();
-        ui::divider();
+        tui::indicator_header();
+        tui::divider();
 
         for (index, indicator) in self.indicators.iter().enumerate() {
-            ui::indicator_row(
+            tui::indicator_row(
                 index + 1,
                 indicator.indicator_type.as_str(),
                 &indicator.value,

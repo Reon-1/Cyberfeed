@@ -4,10 +4,10 @@ use super::terminal::{self, InputEditor};
 use super::threat_menu;
 use crate::config::Config;
 use crate::investigation::Investigation;
-use crate::ui;
+use crate::tui;
 use reqwest::blocking::Client;
 
-const MAIN_MENU_OPTIONS: [(&str, &str, &str); 5] = [
+const MAIN_MENU_OPTIONS: [(&str, &str, &str); 6] = [
     ("1", "Check a File", "Analyze a file on this computer"),
     (
         "2",
@@ -29,9 +29,10 @@ const MAIN_MENU_OPTIONS: [(&str, &str, &str); 5] = [
         "More Tools",
         "Offline demo, setup check, batch files, and live threat feeds",
     ),
+    ("0", "Exit", "Leave CyberFeed and restore the terminal"),
 ];
 
-const INVESTIGATION_MENU_OPTIONS: [(&str, &str, &str); 4] = [
+const INVESTIGATION_MENU_OPTIONS: [(&str, &str, &str); 5] = [
     (
         "1",
         "Check a Value",
@@ -44,6 +45,11 @@ const INVESTIGATION_MENU_OPTIONS: [(&str, &str, &str); 4] = [
     ),
     (
         "3",
+        "Compare Indicator Lists",
+        "Preview and compare indicators from two or more text files locally",
+    ),
+    (
+        "4",
         "Save This Session",
         "Save all completed file and value checks as one report",
     ),
@@ -105,6 +111,7 @@ fn main_menu_action(selection: &str) -> Option<MainMenuAction> {
 enum SessionMenuAction {
     CheckValue,
     Review,
+    CompareLists,
     Save,
     Back,
 }
@@ -113,7 +120,8 @@ fn session_menu_action(selection: &str) -> Option<SessionMenuAction> {
     Some(match selection {
         "1" => SessionMenuAction::CheckValue,
         "2" => SessionMenuAction::Review,
-        "3" => SessionMenuAction::Save,
+        "3" => SessionMenuAction::CompareLists,
+        "4" => SessionMenuAction::Save,
         "0" => SessionMenuAction::Back,
         _ => return None,
     })
@@ -133,16 +141,11 @@ pub(super) fn run(client: &Client, config: &Config) {
 
     loop {
         terminal::clear_screen();
-        ui::header("CYBERFEED", "Check files, search logs, and review evidence");
-        ui::box_line("");
-        render_main_menu_options();
-        ui::box_line("");
-        ui::note("File checks, log searches, and saved reports work without provider credentials.");
-        ui::navigation_footer("0", "Exit · choose 1–5 above");
-        ui::close_box();
-
-        let selection =
-            terminal::read_input(&mut editor, "\n  Choose an option (0 to exit): ", false);
+        let selection = tui::terminal::select_menu(
+            "CyberFeed",
+            "Check files, search logs, and review evidence. Local workflows need no credentials.",
+            &MAIN_MENU_OPTIONS,
+        );
         match main_menu_action(&selection) {
             Some(MainMenuAction::CheckFile) => file_workflow::investigate_file(
                 &mut editor,
@@ -173,12 +176,6 @@ pub(super) fn run(client: &Client, config: &Config) {
     }
 }
 
-fn render_main_menu_options() {
-    for (key, label, description) in MAIN_MENU_OPTIONS {
-        ui::menu_item(key, label, description);
-    }
-}
-
 fn more_menu(
     editor: &mut InputEditor,
     client: &Client,
@@ -189,16 +186,12 @@ fn more_menu(
 ) {
     loop {
         terminal::clear_screen();
-        ui::header("MORE TOOLS", "Optional setup and external threat feeds");
-        ui::note(
-            "The demo is offline; configure credentials here. Threat feeds make live requests.",
-        );
-        for (key, label, description) in MORE_MENU_OPTIONS {
-            ui::menu_item(key, label, description);
-        }
-        ui::navigation_footer("0", "Back to the main menu");
-        ui::close_box();
-        match terminal::read_input(editor, "\n  Choose an option (0 to go back): ", false).as_str()
+        match tui::terminal::select_menu(
+            "More Tools",
+            "Offline demo needs no network. Threat feeds make live requests.",
+            &MORE_MENU_OPTIONS,
+        )
+        .as_str()
         {
             "1" => offline_demo(),
             "2" => setup_diagnostics(config),
@@ -222,41 +215,48 @@ fn configure_providers(editor: &mut InputEditor, config: &Config) {
 
     loop {
         terminal::clear_screen();
-        ui::header(
+        tui::header(
             "CONFIGURE PROVIDERS",
             "Credentials are optional and never tested here",
         );
-        ui::note("MalwareBazaar, ThreatFox, and URLhaus share ABUSECH_AUTH_KEY.");
-        ui::note("Cloudflare Radar uses CLOUDFLARE_API_TOKEN.");
-        ui::status(
+        tui::note("MalwareBazaar, ThreatFox, and URLhaus share ABUSECH_AUTH_KEY.");
+        tui::note("Cloudflare Radar uses CLOUDFLARE_API_TOKEN.");
+        tui::status(
             "abuse.ch key",
             if config.abusech_auth_key.is_some() {
                 "Present · authentication not verified"
             } else {
                 "Not configured"
             },
-            ui::Status::Neutral,
+            tui::Status::Neutral,
         );
-        ui::status(
+        tui::status(
             "Cloudflare token",
             if config.cloudflare_token.is_some() {
                 "Present · authentication not verified"
             } else {
                 "Not configured"
             },
-            ui::Status::Neutral,
+            tui::Status::Neutral,
         );
-        ui::note(
+        tui::note(
             "Saved values go in .env as plaintext. Existing environment variables take precedence over .env.",
         );
-        ui::note(
+        tui::note(
             "Changes are read at startup; restart CyberFeed after saving or removing a value.",
         );
-        ui::menu_item("1", "abuse.ch Services", "Set or remove the shared key");
-        ui::menu_item("2", "Cloudflare Radar", "Set or remove the Radar token");
-        ui::navigation_footer("0", "Back");
-        ui::close_box();
-        match terminal::read_input(editor, "  Choose a provider (0 to go back): ", false).as_str() {
+        let providers = [
+            ("1", "abuse.ch Services", "Set or remove the shared key"),
+            ("2", "Cloudflare Radar", "Set or remove the Radar token"),
+            ("0", "Back", "Return to More Tools"),
+        ];
+        match tui::terminal::select_menu(
+            "Configure Providers",
+            "Credentials remain hidden and are never tested during setup.",
+            &providers,
+        )
+        .as_str()
+        {
             "1" => edit_credential(editor, "ABUSECH_AUTH_KEY", "abuse.ch"),
             "2" => edit_credential(editor, "CLOUDFLARE_API_TOKEN", "Cloudflare Radar"),
             "0" => break,
@@ -268,14 +268,15 @@ fn configure_providers(editor: &mut InputEditor, config: &Config) {
         use crate::config::{CredentialChange, apply_credential_change};
 
         terminal::clear_screen();
-        ui::header("UPDATE CREDENTIAL", provider);
-        ui::note("The value is hidden while you type and is never tested automatically.");
-        ui::warning("The .env file stores credentials as plaintext. Keep it private.");
-        ui::menu_item("1", "Add or Replace", "Enter a new credential");
-        ui::menu_item("2", "Remove Saved Value", "Delete this key from .env");
-        ui::navigation_footer("0", "Cancel");
-        ui::close_box();
-        let action = terminal::read_input(editor, "  Choose an action (0 to cancel): ", false);
+        tui::header("UPDATE CREDENTIAL", provider);
+        tui::note("The value is hidden while you type and is never tested automatically.");
+        tui::warning("The .env file stores credentials as plaintext. Keep it private.");
+        let actions = [
+            ("1", "Add or Replace", "Enter a new credential"),
+            ("2", "Remove Saved Value", "Delete this key from .env"),
+            ("0", "Cancel", "Return without changing configuration"),
+        ];
+        let action = tui::terminal::select_menu("Update Credential", provider, &actions);
         let result = match action.as_str() {
             "1" => {
                 let Some(secret) = terminal::read_secret("  New credential (hidden): ") else {
@@ -287,7 +288,7 @@ fn configure_providers(editor: &mut InputEditor, config: &Config) {
                         "  Save this value to .env as plaintext? [y/N]: ",
                         false,
                     )
-                    .eq_ignore_ascii_case("y")
+                    .is_some_and(|answer| answer.eq_ignore_ascii_case("y"))
                 {
                     return;
                 }
@@ -295,7 +296,7 @@ fn configure_providers(editor: &mut InputEditor, config: &Config) {
             }
             "2" => {
                 if !terminal::read_input(editor, "  Remove this key from .env? [y/N]: ", false)
-                    .eq_ignore_ascii_case("y")
+                    .is_some_and(|answer| answer.eq_ignore_ascii_case("y"))
                 {
                     return;
                 }
@@ -307,17 +308,16 @@ fn configure_providers(editor: &mut InputEditor, config: &Config) {
         match result {
             Ok(true) => {
                 terminal::clear_screen();
-                ui::header(
+                tui::header(
                     "CONFIGURATION UPDATED",
                     "Restart CyberFeed to apply the change",
                 );
-                ui::status(
+                tui::status(
                     "Credential",
                     "Saved without displaying its value",
-                    ui::Status::Success,
+                    tui::Status::Success,
                 );
-                ui::navigation_footer("Enter", "Return");
-                ui::close_box();
+                tui::navigation_footer("Enter", "Return");
                 terminal::pause();
             }
             Ok(false) => {}
@@ -336,19 +336,20 @@ fn batch_triage(editor: &mut InputEditor) {
         path::{Path, PathBuf},
     };
     terminal::clear_screen();
-    ui::header(
+    tui::header(
         "BATCH LOCAL TRIAGE",
         "Bounded local inspection · no provider requests",
     );
-    ui::note(
+    tui::note(
         "Enter semicolon-separated file paths or one directory. Directories are scanned one level only.",
     );
-    ui::note(
+    tui::note(
         "Maximum 100 files; extracted indicators are capped at 10,000 per file by the inspection pipeline.",
     );
-    ui::navigation_footer("0", "Cancel");
-    ui::close_box();
-    let input = terminal::read_input(editor, "  Paths: ", true);
+    tui::navigation_footer("0", "Cancel");
+    let Some(input) = terminal::read_input(editor, "  Paths: ", true) else {
+        return;
+    };
     if input == "0" || input.trim().is_empty() {
         return;
     }
@@ -411,21 +412,20 @@ fn batch_triage(editor: &mut InputEditor) {
         }
     }
     terminal::clear_screen();
-    ui::header("BATCH TRIAGE SUMMARY", "Local inspection results");
-    ui::field("Processed files", processed);
-    ui::field("Errors", errors.len());
-    ui::field("Saved JSON reports", saved.len());
+    tui::header("BATCH TRIAGE SUMMARY", "Local inspection results");
+    tui::field("Processed files", processed);
+    tui::field("Errors", errors.len());
+    tui::field("Saved JSON reports", saved.len());
     for path in saved {
-        ui::field("Report", path.display());
+        tui::field("Report", path.display());
     }
     for error in errors {
-        ui::field("File error", error);
+        tui::field("File error", error);
     }
-    ui::warning(
+    tui::warning(
         "Batch mode performed local extraction only. No provider outcomes were requested or inferred.",
     );
-    ui::navigation_footer("Enter", "Return");
-    ui::close_box();
+    tui::navigation_footer("Enter", "Return");
     terminal::pause();
 }
 
@@ -433,20 +433,21 @@ fn log_hunt(editor: &mut InputEditor) {
     use crate::{file::FileInfo, log_hunt::inspect_log, report::InvestigationReport};
     use std::path::Path;
     terminal::clear_screen();
-    ui::header(
+    tui::header(
         "LOCAL LOG HUNT",
         "Text and JSONL · streamed · no content uploads",
     );
-    ui::note(
+    tui::note(
         "Supported input: ordinary UTF-8 text and one JSON object per .jsonl line. No vendor-specific schemas are assumed.",
     );
-    ui::note(
+    tui::note(
         "Limits: 64 MiB per file, 16 KiB per line, 1,000 unique indicators, 10,000 occurrences.",
     );
-    ui::note("This mode extracts locally and does not enrich through providers.");
-    ui::navigation_footer("0", "Cancel");
-    ui::close_box();
-    let input = terminal::read_input(editor, "  Log path: ", true);
+    tui::note("This mode extracts locally and does not enrich through providers.");
+    tui::navigation_footer("0", "Cancel");
+    let Some(input) = terminal::read_input(editor, "  Log path: ", true) else {
+        return;
+    };
     if input == "0" || input.trim().is_empty() {
         return;
     }
@@ -471,21 +472,21 @@ fn log_hunt(editor: &mut InputEditor) {
             );
             report.local_inspection.source_occurrences = hunt.occurrences;
             terminal::clear_screen();
-            ui::header(
+            tui::header(
                 "LOG HUNT RESULTS",
                 "Locally observed values · no provider intelligence",
             );
-            ui::field(
+            tui::field(
                 "Unique indicators",
                 report.local_inspection.indicators.len(),
             );
-            ui::field(
+            tui::field(
                 "Occurrences with locations",
                 report.local_inspection.source_occurrences.len(),
             );
-            ui::field("Input limit reached", hunt.limit_reached);
+            tui::field("Input limit reached", hunt.limit_reached);
             for occurrence in report.local_inspection.source_occurrences.iter().take(15) {
-                ui::field(
+                tui::field(
                     "Occurrence",
                     format!(
                         "{}:{} · {} · {}",
@@ -495,20 +496,19 @@ fn log_hunt(editor: &mut InputEditor) {
                         occurrence.original_value
                     ),
                 );
-                ui::field("Context", &occurrence.context);
+                tui::field("Context", &occurrence.context);
             }
-            ui::warning(
+            tui::warning(
                 "Observed log values are leads, not provider findings or proof of malicious activity.",
             );
             match crate::report::save_report(&report, Path::new("reports")) {
                 Ok((json, markdown)) => {
-                    ui::field("JSON report", json.display());
-                    ui::field("Markdown report", markdown.display());
+                    tui::field("JSON report", json.display());
+                    tui::field("Markdown report", markdown.display());
                 }
-                Err(error) => ui::field("Report save error", error),
+                Err(error) => tui::field("Report save error", error),
             }
-            ui::navigation_footer("Enter", "Return");
-            ui::close_box();
+            tui::navigation_footer("Enter", "Return");
             terminal::pause();
         }
     }
@@ -516,12 +516,12 @@ fn log_hunt(editor: &mut InputEditor) {
 
 fn setup_diagnostics(config: &Config) {
     terminal::clear_screen();
-    ui::header(
+    tui::header(
         "SETUP DIAGNOSTICS",
         "Local checks only · no network requests",
     );
-    ui::section("PROVIDER CONFIGURATION");
-    ui::field(
+    tui::section("PROVIDER CONFIGURATION");
+    tui::field(
         "MalwareBazaar",
         if config.abusech_auth_key.is_some() {
             "Credential present · authentication not checked"
@@ -529,7 +529,7 @@ fn setup_diagnostics(config: &Config) {
             "Not configured · local features remain available"
         },
     );
-    ui::field(
+    tui::field(
         "ThreatFox",
         if config.abusech_auth_key.is_some() {
             "Credential present · authentication not checked"
@@ -537,7 +537,7 @@ fn setup_diagnostics(config: &Config) {
             "Not configured · local features remain available"
         },
     );
-    ui::field(
+    tui::field(
         "URLhaus",
         if config.abusech_auth_key.is_some() {
             "Credential present · authentication not checked"
@@ -545,7 +545,7 @@ fn setup_diagnostics(config: &Config) {
             "Not configured · local features remain available"
         },
     );
-    ui::field(
+    tui::field(
         "Cloudflare Radar",
         if config.cloudflare_token.is_some() {
             "Token present · authentication not checked"
@@ -567,8 +567,8 @@ fn setup_diagnostics(config: &Config) {
                 })
         })
         .is_ok();
-    ui::section("LOCAL PREREQUISITES");
-    ui::field(
+    tui::section("LOCAL PREREQUISITES");
+    tui::field(
         "Report directory",
         if writable {
             "reports/ accessible and writable"
@@ -576,9 +576,8 @@ fn setup_diagnostics(config: &Config) {
             "reports/ unavailable or not writable"
         },
     );
-    ui::field("Network check", "Not performed");
-    ui::navigation_footer("Enter", "Return");
-    ui::close_box();
+    tui::field("Network check", "Not performed");
+    tui::navigation_footer("Enter", "Return");
     terminal::pause();
 }
 
@@ -589,23 +588,23 @@ fn offline_demo() {
         InvestigationReport, LookupOutcome, LookupSubject, MatchDetails, ProviderLookup,
     };
     terminal::clear_screen();
-    ui::header(
+    tui::header(
         "OFFLINE DEMO",
         "DEMO DATA · simulated provider responses · no requests",
     );
-    ui::warning("Every finding on this screen is synthetic training data, not live intelligence.");
-    ui::section("SAMPLE INVESTIGATION");
-    ui::field("Artifact", "training-sample.txt · read locally as data");
-    ui::field(
+    tui::warning("Every finding on this screen is synthetic training data, not live intelligence.");
+    tui::section("SAMPLE INVESTIGATION");
+    tui::field("Artifact", "training-sample.txt · read locally as data");
+    tui::field(
         "SHA-256",
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     );
-    ui::field("Extracted indicator", "https://demo.invalid/payload.exe");
-    ui::section("SIMULATED PROVIDER OUTCOMES");
-    ui::field("MalwareBazaar", "DEMO FOUND · synthetic hash record");
-    ui::field("ThreatFox", "DEMO NOT FOUND · synthetic response");
-    ui::field("URLhaus", "DEMO NOT CONFIGURED · no request made");
-    ui::section("EVIDENCE AND REPORT PREVIEW");
+    tui::field("Extracted indicator", "https://demo.invalid/payload.exe");
+    tui::section("SIMULATED PROVIDER OUTCOMES");
+    tui::field("MalwareBazaar", "DEMO FOUND · synthetic hash record");
+    tui::field("ThreatFox", "DEMO NOT FOUND · synthetic response");
+    tui::field("URLhaus", "DEMO NOT CONFIGURED · no request made");
+    tui::section("EVIDENCE AND REPORT PREVIEW");
     let file = FileInfo {
         name: "training-sample.txt".into(),
         size: 64,
@@ -650,11 +649,10 @@ fn offline_demo() {
     );
     demo.summary.original_file_lookup_status = Some("DEMO FOUND (SYNTHETIC)".into());
     for line in demo.to_markdown().lines().take(14) {
-        ui::box_line(line);
+        tui::box_line(line);
     }
-    ui::box_line("DEMO: no provider requests were made; no report was saved.");
-    ui::navigation_footer("Enter", "Return");
-    ui::close_box();
+    tui::box_line("DEMO: no provider requests were made; no report was saved.");
+    tui::navigation_footer("Enter", "Return");
     terminal::pause();
 }
 
@@ -666,18 +664,19 @@ fn investigation_menu(
 ) {
     loop {
         terminal::clear_screen();
-        ui::header("CURRENT SESSION", "Check a value or review results");
-        ui::box_line("");
-        render_investigation_menu_options();
-        ui::box_line("");
-        ui::close_box();
-
-        let selection = terminal::read_input(editor, "\n  Select an option: ", false);
+        let selection = tui::terminal::select_menu(
+            "Current Session",
+            "Review independent checks collected during this run.",
+            &INVESTIGATION_MENU_OPTIONS,
+        );
         match session_menu_action(&selection) {
             Some(SessionMenuAction::CheckValue) => {
                 file_workflow::check_indicator(editor, client, auth_key, investigation)
             }
             Some(SessionMenuAction::Review) => file_workflow::view_indicators(investigation),
+            Some(SessionMenuAction::CompareLists) => {
+                compare_indicator_lists(editor, client, auth_key, investigation)
+            }
             Some(SessionMenuAction::Save) => save_session_report(editor, investigation),
             Some(SessionMenuAction::Back) => break,
             None => terminal::invalid_choice(),
@@ -685,9 +684,226 @@ fn investigation_menu(
     }
 }
 
-fn render_investigation_menu_options() {
-    for (key, label, description) in INVESTIGATION_MENU_OPTIONS {
-        ui::menu_item(key, label, description);
+fn compare_indicator_lists(
+    editor: &mut InputEditor,
+    client: &Client,
+    auth_key: &str,
+    investigation: &mut Investigation,
+) {
+    use crate::app::indicator_list::{Import, import_path};
+    use std::path::Path;
+
+    let mut imported = Import::default();
+    loop {
+        terminal::clear_screen();
+        tui::header(
+            "COMPARE INDICATOR LISTS",
+            "Local preview only; files are not uploaded",
+        );
+        tui::note("Add at least two text files, one hash, IP, domain, or HTTP(S) URL per line.");
+        tui::note(
+            "Blank lines and lines beginning with # are ignored. Surrounding whitespace is trimmed.",
+        );
+        tui::note(
+            "Limits: 8 MiB per file, 4,096 bytes per line, 100,000 candidates, and 1,000 URLs.",
+        );
+        tui::field("Files added", imported.files.len());
+        tui::navigation_footer("Esc", "Cancel before any provider lookup");
+        let Some(path) = terminal::read_input(editor, "  Indicator-list path: ", true) else {
+            return;
+        };
+        if path.is_empty() {
+            terminal::show_error("Enter a file path, or press Escape to cancel.");
+            continue;
+        }
+        match import_path(Path::new(&path), &mut imported) {
+            Ok(()) => {}
+            Err(error) => {
+                terminal::show_error(&format!("Could not read this list: {error}"));
+                continue;
+            }
+        }
+        let options = [
+            (
+                "1",
+                "Add another file",
+                "Import another list for comparison",
+            ),
+            ("2", "Review preview", "Continue to the local comparison"),
+            ("0", "Cancel", "Return without running provider lookups"),
+        ];
+        let selection = tui::terminal::select_menu(
+            "Indicator Lists",
+            "Keep adding files, or review the local preview.",
+            &options,
+        );
+        match selection.as_str() {
+            "1" => continue,
+            "2" => break,
+            _ => return,
+        }
+    }
+    if imported.files.len() < 2 {
+        terminal::show_error("At least two readable list files are needed for a comparison.");
+        return;
+    }
+    let unique = imported.unique();
+    loop {
+        terminal::clear_screen();
+        tui::header(
+            "INDICATOR LIST PREVIEW",
+            "Local classification and overlap; no network requests made",
+        );
+        tui::section("SOURCES");
+        for (path, lines) in imported.files.iter().take(5) {
+            tui::field(path, format!("{lines} lines read"));
+        }
+        if imported.files.len() > 5 {
+            tui::note(&format!(
+                "{} additional sources were imported.",
+                imported.files.len() - 5
+            ));
+        }
+        tui::section("COLLECTED INDICATORS");
+        tui::field("Unique valid", unique.len());
+        for kind in [
+            crate::indicator::IndicatorType::Hash,
+            crate::indicator::IndicatorType::IP,
+            crate::indicator::IndicatorType::Domain,
+            crate::indicator::IndicatorType::Url,
+        ] {
+            let count = unique
+                .iter()
+                .filter(|indicator| indicator.indicator_type == kind)
+                .count();
+            if count > 0 {
+                tui::field(kind.as_str(), count);
+            }
+        }
+        let (common, left_only, right_only) = imported.comparisons();
+        tui::field("Common to first two", common);
+        tui::field("Only in first", left_only);
+        tui::field("Only in second", right_only);
+        tui::field("Duplicate occurrences", imported.duplicates);
+        tui::field("Invalid candidates", imported.invalid.len());
+        let provider_state = if auth_key.trim().is_empty() {
+            "Not configured"
+        } else {
+            "Configured"
+        };
+        tui::field("abuse.ch providers", provider_state);
+        if imported.limited {
+            tui::warning("A documented input limit was reached; this preview is incomplete.");
+        }
+        tui::note("Provider matches describe an indicator; NOT FOUND does not establish safety.");
+        tui::note("Each valid occurrence retains its source path and line during this preview.");
+        tui::navigation_footer("Enter", "Review indicator examples and invalid lines");
+        terminal::pause();
+
+        terminal::clear_screen();
+        tui::header(
+            "LIST EVIDENCE",
+            "Example values retain source file and line",
+        );
+        tui::section("PROVIDER ROUTING");
+        tui::field("MalwareBazaar", format!("{provider_state} · hashes only"));
+        tui::field(
+            "ThreatFox",
+            format!("{provider_state} · supported hash, IP, domain, and URL types"),
+        );
+        tui::field(
+            "URLhaus",
+            format!("{provider_state} · URL, host, MD5, and SHA-256"),
+        );
+        tui::section("VALID VALUES (FIRST 8)");
+        for indicator in unique.iter().take(8) {
+            let first = imported
+                .occurrences
+                .iter()
+                .find(|occ| occ.indicator == *indicator);
+            if let Some(occ) = first {
+                tui::field(
+                    &format!(
+                        "{} · {}:{}",
+                        indicator.indicator_type.as_str(),
+                        occ.source,
+                        occ.line
+                    ),
+                    &indicator.value,
+                );
+            }
+        }
+        if unique.len() > 8 {
+            tui::note(
+                "Showing the first 8 values; use the follow-up menu to select from the first 30.",
+            );
+        }
+        if !imported.invalid.is_empty() {
+            tui::section("INVALID LINES (FIRST 5)");
+            for (source, line, value) in imported.invalid.iter().take(5) {
+                tui::field(&format!("{source}:{line}"), value);
+            }
+            if imported.invalid.len() > 5 {
+                tui::note(&format!(
+                    "{} more invalid candidates are omitted from this screen.",
+                    imported.invalid.len() - 5
+                ));
+            }
+        }
+        tui::note("Invalid lines were not sent to providers. No prose extraction is performed.");
+        tui::navigation_footer("Enter", "Choose an optional provider lookup");
+        terminal::pause();
+
+        terminal::clear_screen();
+        let mut options = vec![(
+            "0".to_owned(),
+            "Return".to_owned(),
+            "Back to Current Session".to_owned(),
+        )];
+        for (index, indicator) in unique.iter().take(30).enumerate() {
+            let source = imported
+                .occurrences
+                .iter()
+                .find(|occ| occ.indicator == *indicator)
+                .map(|occ| format!("{}:{}", occ.source, occ.line))
+                .unwrap_or_default();
+            options.push((
+                (index + 1).to_string(),
+                format!("Check {}", indicator.value),
+                format!(
+                    "{} · {source} · fresh provider lookup",
+                    indicator.indicator_type.as_str()
+                ),
+            ));
+        }
+        if unique.len() > 30 {
+            tui::note(
+                "Only the first 30 values are directly selectable here; use Value Search for others.",
+            );
+        }
+        tui::note(
+            "A lookup sends only the selected indicator to configured providers. List files are never uploaded.",
+        );
+        let refs = options
+            .iter()
+            .map(|(key, title, description)| (key.as_str(), title.as_str(), description.as_str()))
+            .collect::<Vec<_>>();
+        let selection =
+            tui::terminal::select_menu("Follow Up", "Choose a value to look up, or return.", &refs);
+        if selection == "0" {
+            return;
+        }
+        if let Ok(number) = selection.parse::<usize>()
+            && let Some(indicator) = unique.get(number.saturating_sub(1))
+        {
+            file_workflow::check_indicator_value(
+                editor,
+                client,
+                auth_key,
+                investigation,
+                indicator.value.clone(),
+            );
+        }
     }
 }
 
@@ -698,12 +914,12 @@ fn save_session_report(editor: &mut InputEditor, investigation: &Investigation) 
     }
 
     terminal::clear_screen();
-    ui::header("SAVE CURRENT SESSION", "Create Markdown and JSON copies");
-    ui::box_line("The report includes every completed file and value check in this session.");
-    ui::warning("Reports may contain sensitive indicators and provider evidence.");
-    ui::navigation_footer("0", "Cancel");
-    ui::close_box();
-    let answer = terminal::read_input(editor, "  Save session report? [y/N]: ", false);
+    tui::header("SAVE CURRENT SESSION", "Create Markdown and JSON copies");
+    tui::box_line("The report includes every completed file and value check in this session.");
+    tui::warning("Reports may contain sensitive indicators and provider evidence.");
+    tui::navigation_footer("0", "Cancel");
+    let answer =
+        terminal::read_input(editor, "  Save session report? [y/N]: ", false).unwrap_or_default();
     if !matches!(answer.to_ascii_lowercase().as_str(), "y" | "yes") {
         return;
     }
@@ -712,14 +928,13 @@ fn save_session_report(editor: &mut InputEditor, investigation: &Investigation) 
     match crate::report::save_session_report(&report, std::path::Path::new("reports")) {
         Ok((json, markdown)) => {
             terminal::clear_screen();
-            ui::header(
+            tui::header(
                 "SESSION REPORTS SAVED",
                 "Current session evidence stored locally",
             );
-            ui::field("JSON report", json.display());
-            ui::field("Markdown report", markdown.display());
-            ui::navigation_footer("Enter", "Return to Current Session");
-            ui::close_box();
+            tui::field("JSON report", json.display());
+            tui::field("Markdown report", markdown.display());
+            tui::navigation_footer("Enter", "Return to Current Session");
             terminal::pause();
         }
         Err(error) => terminal::show_error(&format!("Could not save session report: {error}")),
@@ -730,19 +945,11 @@ fn save_session_report(editor: &mut InputEditor, investigation: &Investigation) 
 mod tests {
     use super::{
         INVESTIGATION_MENU_OPTIONS, MAIN_MENU_OPTIONS, MORE_MENU_OPTIONS, MainMenuAction,
-        SessionMenuAction, main_menu_action, render_investigation_menu_options,
-        render_main_menu_options, session_menu_action,
+        SessionMenuAction, main_menu_action, session_menu_action,
     };
 
     #[test]
     fn investigation_menu_has_review_and_indicator_actions_without_duplicate_file_check() {
-        crate::ui::reset_screen();
-        render_investigation_menu_options();
-        let rendered = crate::ui::recorded_line_texts().join("\n");
-        assert!(rendered.contains("Check a Value"));
-        assert!(rendered.contains("Review This Session"));
-        assert!(rendered.contains("Save This Session"));
-
         let labels: Vec<&str> = INVESTIGATION_MENU_OPTIONS
             .iter()
             .map(|(_, label, _)| *label)
@@ -753,6 +960,7 @@ mod tests {
             [
                 "Check a Value",
                 "Review This Session",
+                "Compare Indicator Lists",
                 "Save This Session",
                 "Back"
             ]
@@ -762,13 +970,6 @@ mod tests {
 
     #[test]
     fn main_menu_reaches_file_checks_current_session_and_saved_reports() {
-        crate::ui::reset_screen();
-        render_main_menu_options();
-        let rendered = crate::ui::recorded_line_texts().join("\n");
-
-        for label in ["Check a File", "Current Session", "Saved Reports"] {
-            assert!(rendered.contains(label), "missing menu action {label}");
-        }
         assert_eq!(
             MAIN_MENU_OPTIONS
                 .iter()
@@ -779,12 +980,14 @@ mod tests {
                 "Current Session",
                 "Search Logs",
                 "Saved Reports",
-                "More Tools"
+                "More Tools",
+                "Exit"
             ]
         );
         assert_eq!(main_menu_action("1"), Some(MainMenuAction::CheckFile));
         assert_eq!(main_menu_action("2"), Some(MainMenuAction::CurrentSession));
         assert_eq!(main_menu_action("4"), Some(MainMenuAction::SavedReports));
+        assert_eq!(main_menu_action("0"), Some(MainMenuAction::Exit));
         assert_eq!(main_menu_action("invalid"), None);
     }
 
@@ -795,7 +998,11 @@ mod tests {
             Some(SessionMenuAction::CheckValue)
         );
         assert_eq!(session_menu_action("2"), Some(SessionMenuAction::Review));
-        assert_eq!(session_menu_action("3"), Some(SessionMenuAction::Save));
+        assert_eq!(
+            session_menu_action("3"),
+            Some(SessionMenuAction::CompareLists)
+        );
+        assert_eq!(session_menu_action("4"), Some(SessionMenuAction::Save));
         assert_eq!(session_menu_action("0"), Some(SessionMenuAction::Back));
         assert_eq!(session_menu_action("invalid"), None);
     }

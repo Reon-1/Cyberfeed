@@ -1,21 +1,74 @@
 //! Provider request scheduling and normalization for file investigations.
 use crate::indicator::{Indicator, IndicatorType};
-use crate::providers::malwarebazaar::{
-    MalwareLookupError, MalwareLookupResult, MalwareSample, lookup_malware_hash,
-};
+use crate::providers::malwarebazaar::{MalwareLookupError, MalwareLookupResult, MalwareSample};
 use crate::providers::threatfox::{self, ThreatFoxError, ThreatFoxLookupResult};
 use crate::providers::urlhaus;
 use crate::report::{LookupOutcome, LookupSubject, MatchDetails, ProviderLookup, ThreatFoxFinding};
 use reqwest::blocking::Client;
 use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+pub(super) const INVESTIGATION_BUDGET: Duration = Duration::from_secs(60);
+const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Clone, Copy)]
+pub(super) struct LookupDeadline(Instant);
+
+impl LookupDeadline {
+    pub(super) fn at(instant: Instant) -> Self {
+        Self(instant)
+    }
+
+    fn remaining(self) -> Option<Duration> {
+        self.0
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+    }
+
+    fn timeout(self) -> Option<Duration> {
+        self.remaining()
+            .map(|remaining| remaining.min(PROVIDER_REQUEST_TIMEOUT))
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct LookupPolicy {
+    subject: LookupSubject,
+    allow_query: bool,
+    deadline: Option<LookupDeadline>,
+}
+
+impl LookupPolicy {
+    pub(super) fn new(
+        subject: LookupSubject,
+        allow_query: bool,
+        deadline: Option<LookupDeadline>,
+    ) -> Self {
+        Self {
+            subject,
+            allow_query,
+            deadline,
+        }
+    }
+}
+
+fn deadline_skip() -> LookupOutcome {
+    LookupOutcome::SkippedDeadline {
+        explanation:
+            "The overall investigation deadline elapsed before this request; no request was sent."
+                .into(),
+    }
+}
+
+fn deadline_timeout() -> LookupOutcome {
+    LookupOutcome::TimedOut {
+        explanation: "The overall investigation deadline elapsed during this request; later checks were skipped.".into(),
+    }
+}
 
 pub(super) const MAX_AUTOMATIC_MALWAREBAZAAR_LOOKUPS: usize = 10;
 pub(super) const MAX_AUTOMATIC_THREATFOX_LOOKUPS: usize = 10;
-/// URLhaus still has a ten-request per-file ceiling. Category caps reserve
-/// capacity for URLs and hosts so payload hashes cannot consume every slot.
 pub(super) const MAX_AUTOMATIC_URLHAUS_LOOKUPS: usize = 10;
-const URLHAUS_CATEGORY_CAPS: [usize; 4] = [4, 3, 3, 3]; // payload, explicit host, exact URL, URL host
 
 #[derive(Default)]
 pub(super) struct UrlhausRequestState {
@@ -23,11 +76,12 @@ pub(super) struct UrlhausRequestState {
     pub(super) seen: HashSet<String>,
 }
 
-pub(super) fn show_hash_lookup(
+pub(super) fn show_hash_lookup_before(
     client: &Client,
     auth_key: &str,
     hash: &str,
     looked_up: &mut HashSet<String>,
+    deadline: Option<LookupDeadline>,
 ) -> ProviderLookup {
     let subject = if hash.len() == 64 {
         LookupSubject::ExtractedIndicatorSha256
@@ -36,8 +90,15 @@ pub(super) fn show_hash_lookup(
     };
     if auth_key.trim().is_empty() {
         provider_record(hash, subject, None, LookupOutcome::NotConfigured)
+    } else if deadline.is_some_and(|deadline| deadline.timeout().is_none()) {
+        provider_record(hash, subject, None, deadline_skip())
     } else if should_lookup_hash(looked_up, hash) {
-        let outcome = lookup_hash_record(client, auth_key, hash);
+        let Some(timeout) =
+            deadline.map_or(Some(PROVIDER_REQUEST_TIMEOUT), LookupDeadline::timeout)
+        else {
+            return provider_record(hash, subject, None, deadline_skip());
+        };
+        let outcome = lookup_hash_record_with_timeout(client, auth_key, hash, timeout, deadline);
         provider_record(hash, subject, Some(now_seconds()), outcome)
     } else if looked_up.contains(&hash.to_ascii_lowercase()) {
         provider_record(
@@ -53,15 +114,19 @@ pub(super) fn show_hash_lookup(
     }
 }
 
-pub(super) fn threatfox_lookup_record(
+pub(super) fn threatfox_lookup_record_before(
     client: &Client,
     auth_key: &str,
     value: &str,
     indicator_type: IndicatorType,
-    subject: LookupSubject,
     queried: &mut HashSet<String>,
-    allow_query: bool,
+    policy: LookupPolicy,
 ) -> ProviderLookup {
+    let LookupPolicy {
+        subject,
+        allow_query,
+        deadline,
+    } = policy;
     let indicator = crate::indicator::Indicator::new(value, indicator_type);
     let key = threatfox_indicator_key(indicator_type, value);
     let outcome = if let Err(result) = threatfox::request_for_indicator(&indicator) {
@@ -74,6 +139,8 @@ pub(super) fn threatfox_lookup_record(
         }
     } else if !allow_query {
         LookupOutcome::SkippedLookupLimit
+    } else if deadline.is_some_and(|deadline| deadline.timeout().is_none()) {
+        deadline_skip()
     } else {
         match claim_threatfox_lookup(queried, &key) {
             AutomaticLookup::Duplicate => LookupOutcome::SkippedDuplicate {
@@ -81,8 +148,29 @@ pub(super) fn threatfox_lookup_record(
             },
             AutomaticLookup::Limit => LookupOutcome::SkippedLookupLimit,
             AutomaticLookup::Proceed => {
-                match threatfox::lookup_indicator(client, Some(auth_key), &indicator) {
+                let Some(timeout) =
+                    deadline.map_or(Some(PROVIDER_REQUEST_TIMEOUT), LookupDeadline::timeout)
+                else {
+                    return provider_named_record(
+                        "ThreatFox",
+                        value,
+                        subject,
+                        None,
+                        deadline_skip(),
+                    );
+                };
+                match threatfox::lookup_indicator_with_timeout(
+                    client,
+                    Some(auth_key),
+                    &indicator,
+                    timeout,
+                ) {
                     Ok(result) => threatfox_outcome(result),
+                    Err(_error)
+                        if deadline.is_some_and(|deadline| deadline.remaining().is_none()) =>
+                    {
+                        deadline_timeout()
+                    }
                     Err(error) => threatfox_error_outcome(error, auth_key),
                 }
             }
@@ -95,6 +183,7 @@ pub(super) fn threatfox_lookup_record(
             | LookupOutcome::Invalid { .. }
             | LookupOutcome::SkippedDuplicate { .. }
             | LookupOutcome::SkippedLookupLimit
+            | LookupOutcome::SkippedDeadline { .. }
     );
     ProviderLookup {
         provider: "ThreatFox".into(),
@@ -116,15 +205,19 @@ pub(super) fn threatfox_indicator_key(indicator_type: IndicatorType, value: &str
     format!("{indicator_type:?}:{normalized}")
 }
 
-pub(super) fn urlhaus_lookup_record(
+pub(super) fn urlhaus_lookup_record_before(
     client: &Client,
     auth_key: &str,
     value: &str,
     indicator_type: IndicatorType,
-    subject: LookupSubject,
     state: &mut UrlhausRequestState,
-    allow_query: bool,
+    policy: LookupPolicy,
 ) -> ProviderLookup {
+    let LookupPolicy {
+        subject,
+        allow_query,
+        deadline,
+    } = policy;
     let indicator = Indicator::new(value, indicator_type);
     let key =
         urlhaus::request_key(&indicator).unwrap_or_else(|| format!("{indicator_type:?}:{value}"));
@@ -137,15 +230,30 @@ pub(super) fn urlhaus_lookup_record(
             references_hash: value.into(),
         }
     } else {
-        state.seen.insert(key.clone());
         if !allow_query || state.queried.len() >= MAX_AUTOMATIC_URLHAUS_LOOKUPS {
+            state.seen.insert(key);
             LookupOutcome::SkippedLookupLimit
+        } else if deadline.is_some_and(|deadline| deadline.timeout().is_none()) {
+            deadline_skip()
         } else {
+            state.seen.insert(key.clone());
             state.queried.insert(key);
-            urlhaus::outcome(
-                urlhaus::lookup_indicator(client, Some(auth_key), &indicator),
-                auth_key,
-            )
+            let Some(timeout) =
+                deadline.map_or(Some(PROVIDER_REQUEST_TIMEOUT), LookupDeadline::timeout)
+            else {
+                return provider_named_record("URLhaus", value, subject, None, deadline_skip());
+            };
+            match urlhaus::lookup_indicator_with_timeout(
+                client,
+                Some(auth_key),
+                &indicator,
+                timeout,
+            ) {
+                Err(_error) if deadline.is_some_and(|deadline| deadline.remaining().is_none()) => {
+                    deadline_timeout()
+                }
+                result => urlhaus::outcome(result, auth_key),
+            }
         }
     };
     let requested = !matches!(
@@ -155,6 +263,7 @@ pub(super) fn urlhaus_lookup_record(
             | LookupOutcome::Invalid { .. }
             | LookupOutcome::SkippedDuplicate { .. }
             | LookupOutcome::SkippedLookupLimit
+            | LookupOutcome::SkippedDeadline { .. }
     );
     ProviderLookup {
         provider: "URLhaus".into(),
@@ -167,7 +276,10 @@ pub(super) fn urlhaus_lookup_record(
 
 /// Reserve the original file hash, then fairly rotate through payload hashes,
 /// explicit host indicators, exact URLs, and URL-derived hosts. The total
-/// remains capped at ten URLhaus requests per file.
+/// remains capped at ten URLhaus requests per file. Categories are independent
+/// so domains cannot consume IP capacity. Slots rotate through every category
+/// with remaining candidates; when categories are empty, active queues reuse
+/// the available budget instead of leaving reserved slots idle.
 pub(super) fn allocate_urlhaus_requests(
     indicators: &[Indicator],
     original_file_hash: &str,
@@ -176,17 +288,18 @@ pub(super) fn allocate_urlhaus_requests(
     let original_key =
         urlhaus::request_key(&original).expect("SHA-256 is a supported payload query");
     let mut seen = HashSet::from([original_key.clone()]);
-    let mut queues: [Vec<String>; 4] = std::array::from_fn(|_| Vec::new());
-    let mut candidates: [Vec<Indicator>; 4] = std::array::from_fn(|_| Vec::new());
+    let mut queues: [Vec<String>; 5] = std::array::from_fn(|_| Vec::new());
+    let mut candidates: [Vec<Indicator>; 5] = std::array::from_fn(|_| Vec::new());
 
     for indicator in indicators {
         match indicator.indicator_type {
             IndicatorType::Hash => candidates[0].push(indicator.clone()),
-            IndicatorType::IP | IndicatorType::Domain => candidates[1].push(indicator.clone()),
+            IndicatorType::IP => candidates[1].push(indicator.clone()),
+            IndicatorType::Domain => candidates[2].push(indicator.clone()),
             IndicatorType::Url => {
-                candidates[2].push(indicator.clone());
+                candidates[3].push(indicator.clone());
                 if let Some((host, kind)) = host_from_url(&indicator.value) {
-                    candidates[3].push(Indicator::new(host, kind));
+                    candidates[4].push(Indicator::new(host, kind));
                 }
             }
         }
@@ -206,28 +319,26 @@ pub(super) fn allocate_urlhaus_requests(
     }
 
     let mut selected = HashSet::from([original_key]);
-    let mut category_counts = [1, 0, 0, 0];
-    let mut cursors = [0; 4];
+    let mut cursors = [0; 5];
     let mut next_category = 0;
     while selected.len() < MAX_AUTOMATIC_URLHAUS_LOOKUPS {
         let Some(category) = (0..queues.len())
             .map(|offset| (next_category + offset) % queues.len())
-            .find(|&index| {
-                cursors[index] < queues[index].len()
-                    && category_counts[index] < URLHAUS_CATEGORY_CAPS[index]
-            })
+            .find(|&index| cursors[index] < queues[index].len())
         else {
             break;
         };
         selected.insert(queues[category][cursors[category]].clone());
         cursors[category] += 1;
-        category_counts[category] += 1;
         next_category = (category + 1) % queues.len();
     }
     selected
 }
 
 pub(super) fn host_from_url(value: &str) -> Option<(String, IndicatorType)> {
+    if !crate::indicator::is_http_url(value) {
+        return None;
+    }
     let url = reqwest::Url::parse(value).ok()?;
     let host = url.host_str()?.to_owned();
     let kind = if host.parse::<std::net::Ipv4Addr>().is_ok() {
@@ -374,9 +485,36 @@ pub(super) fn threatfox_error_outcome(error: ThreatFoxError, auth_key: &str) -> 
     }
 }
 
-pub(super) fn lookup_hash_record(client: &Client, auth_key: &str, hash: &str) -> LookupOutcome {
-    let result = lookup_malware_hash(client, auth_key, hash);
-    outcome_from_malwarebazaar_result(result, auth_key)
+pub(super) fn lookup_hash_record_before(
+    client: &Client,
+    auth_key: &str,
+    hash: &str,
+    deadline: LookupDeadline,
+) -> LookupOutcome {
+    let Some(timeout) = deadline.timeout() else {
+        return deadline_skip();
+    };
+    lookup_hash_record_with_timeout(client, auth_key, hash, timeout, Some(deadline))
+}
+
+pub(super) fn lookup_hash_record_with_timeout(
+    client: &Client,
+    auth_key: &str,
+    hash: &str,
+    timeout: Duration,
+    deadline: Option<LookupDeadline>,
+) -> LookupOutcome {
+    let result = crate::providers::malwarebazaar::lookup_malware_hash_with_timeout(
+        client, auth_key, hash, timeout,
+    );
+    match result {
+        Err(MalwareLookupError::Request(_))
+            if deadline.is_some_and(|deadline| deadline.remaining().is_none()) =>
+        {
+            deadline_timeout()
+        }
+        result => outcome_from_malwarebazaar_result(result, auth_key),
+    }
 }
 
 pub(super) fn redact_secret(message: &str, secret: &str) -> String {
@@ -451,6 +589,22 @@ pub(super) fn provider_record(
         outcome,
     }
 }
+
+fn provider_named_record(
+    provider: &str,
+    value: &str,
+    subject: LookupSubject,
+    retrieved: Option<u64>,
+    outcome: LookupOutcome,
+) -> ProviderLookup {
+    ProviderLookup {
+        provider: provider.into(),
+        subject,
+        queried_hash: value.into(),
+        retrieved_at_unix_seconds: retrieved,
+        outcome,
+    }
+}
 pub(super) fn inspection_extraction_state(
     text: &Option<crate::file::TextIndicators>,
 ) -> Option<bool> {
@@ -475,8 +629,14 @@ pub(super) fn hash_request_available(
 
 #[cfg(test)]
 mod key_tests {
-    use super::threatfox_indicator_key;
+    use super::{
+        INVESTIGATION_BUDGET, LookupDeadline, LookupPolicy, UrlhausRequestState,
+        threatfox_indicator_key, threatfox_lookup_record_before, urlhaus_lookup_record_before,
+    };
     use crate::indicator::IndicatorType;
+    use crate::report::{LookupOutcome, LookupSubject};
+    use std::collections::HashSet;
+    use std::time::Instant;
 
     #[test]
     fn threatfox_url_keys_keep_path_case_but_normalize_host_only_indicators() {
@@ -498,5 +658,45 @@ mod key_tests {
             threatfox_indicator_key(IndicatorType::Hash, &"A".repeat(64)),
             threatfox_indicator_key(IndicatorType::Hash, &"a".repeat(64))
         );
+    }
+
+    #[test]
+    fn expired_deadline_skips_configured_requests_without_claiming_no_match() {
+        assert_eq!(INVESTIGATION_BUDGET.as_secs(), 60);
+        let client = reqwest::blocking::Client::new();
+        let deadline = LookupDeadline::at(Instant::now());
+        let mut threatfox_seen = HashSet::new();
+        let threatfox = threatfox_lookup_record_before(
+            &client,
+            "dummy-key",
+            "example.test",
+            IndicatorType::Domain,
+            &mut threatfox_seen,
+            LookupPolicy::new(LookupSubject::ExtractedIndicator, true, Some(deadline)),
+        );
+        assert!(matches!(
+            threatfox.outcome,
+            LookupOutcome::SkippedDeadline { .. }
+        ));
+        assert!(threatfox.retrieved_at_unix_seconds.is_none());
+        assert!(threatfox_seen.is_empty());
+
+        let mut urlhaus_state = UrlhausRequestState::default();
+        let urlhaus = urlhaus_lookup_record_before(
+            &client,
+            "dummy-key",
+            "example.test",
+            IndicatorType::Domain,
+            &mut urlhaus_state,
+            LookupPolicy::new(LookupSubject::ExtractedIndicator, true, Some(deadline)),
+        );
+        assert!(matches!(
+            urlhaus.outcome,
+            LookupOutcome::SkippedDeadline { .. }
+        ));
+        assert!(urlhaus.retrieved_at_unix_seconds.is_none());
+        assert_eq!(urlhaus.outcome.status(), "SKIPPED: DEADLINE");
+        assert!(urlhaus_state.queried.is_empty());
+        assert!(urlhaus_state.seen.is_empty());
     }
 }

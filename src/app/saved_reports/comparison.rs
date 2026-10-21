@@ -333,6 +333,8 @@ fn outcome_is_unavailable(outcome: &LookupOutcome) -> bool {
             | LookupOutcome::NotConfigured
             | LookupOutcome::SkippedDuplicate { .. }
             | LookupOutcome::SkippedLookupLimit
+            | LookupOutcome::SkippedDeadline { .. }
+            | LookupOutcome::TimedOut { .. }
             | LookupOutcome::Unsupported { .. }
     )
 }
@@ -358,6 +360,10 @@ fn outcome_description(outcome: &LookupOutcome) -> String {
             format!("SKIPPED DUPLICATE (reuses {references_hash})")
         }
         LookupOutcome::SkippedLookupLimit => "SKIPPED LOOKUP LIMIT".into(),
+        LookupOutcome::TimedOut { explanation } => format!("TIMED OUT: {explanation}"),
+        LookupOutcome::SkippedDeadline { explanation } => {
+            format!("SKIPPED DEADLINE: {explanation}")
+        }
         LookupOutcome::Unsupported { explanation } => format!("UNSUPPORTED: {explanation}"),
         LookupOutcome::ThreatFoxFound { findings } => {
             let details = findings

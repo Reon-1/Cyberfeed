@@ -2,11 +2,13 @@
 name = "Cyberfeed"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 
 [dependencies]
 crossterm = "0.29"
 dotenvy = "0.15.7"
 reqwest = { version = "0.13.4", features = ["blocking", "json", "form"] }
+ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.10.9"

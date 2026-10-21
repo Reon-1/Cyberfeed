@@ -1,10 +1,10 @@
 use super::provider_views;
 use super::terminal::{self, InputEditor};
-use crate::file::{inspect_file, normalize_user_path};
+use crate::file::{inspect_file_with_deadline, normalize_user_path};
 use crate::indicator::{Indicator, IndicatorType, MANUAL_HASH_LENGTHS};
 use crate::investigation::Investigation;
 use crate::report::{self, InvestigationReport, LookupOutcome, LookupSubject};
-use crate::ui;
+use crate::tui;
 use reqwest::blocking::Client;
 use std::collections::HashSet;
 
@@ -12,10 +12,11 @@ mod lookups;
 mod results;
 
 use lookups::{
-    UrlhausRequestState, allocate_threatfox_indicators, allocate_urlhaus_requests,
-    hash_request_available, host_from_url, inspection_extraction_state, lookup_hash_record,
-    now_seconds, provider_record, should_query_threatfox, show_hash_lookup,
-    threatfox_indicator_key, threatfox_lookup_record, urlhaus_lookup_record,
+    INVESTIGATION_BUDGET, LookupDeadline, LookupPolicy, UrlhausRequestState,
+    allocate_threatfox_indicators, allocate_urlhaus_requests, hash_request_available,
+    host_from_url, inspection_extraction_state, lookup_hash_record_before, now_seconds,
+    provider_record, should_query_threatfox, show_hash_lookup_before, threatfox_indicator_key,
+    threatfox_lookup_record_before, urlhaus_lookup_record_before,
 };
 
 pub(super) fn investigate_file(
@@ -24,9 +25,11 @@ pub(super) fn investigate_file(
     auth_key: &str,
     investigation: &mut Investigation,
 ) {
-    let (inspection, mut progress) = loop {
+    let (inspection, mut progress, deadline) = loop {
         clear_file_prompt();
-        let input = terminal::read_input(editor, "  File path: ", true);
+        let Some(input) = terminal::read_input(editor, "  File path: ", true) else {
+            return;
+        };
         if input == "0" {
             return;
         }
@@ -44,8 +47,10 @@ pub(super) fn investigate_file(
         terminal::clear_screen();
         let progress = results::LiveProgress::new();
         progress.phase("Inspecting file, hashing and extracting indicators in one pass…");
-        match inspect_file(&path) {
-            Ok(inspection) => break (inspection, progress),
+        let deadline_at = std::time::Instant::now() + INVESTIGATION_BUDGET;
+        let deadline = LookupDeadline::at(deadline_at);
+        match inspect_file_with_deadline(&path, deadline_at) {
+            Ok(inspection) => break (inspection, progress, deadline),
             Err(error) => {
                 terminal::show_error(&format!(
                     "{error}\nCheck the path and permissions, then try again or enter 0 to cancel."
@@ -110,7 +115,7 @@ pub(super) fn investigate_file(
         lookups.push(lookup);
     } else {
         progress.checking("MalwareBazaar", &file_hash);
-        let outcome = lookup_hash_record(client, auth_key, &file_hash);
+        let outcome = lookup_hash_record_before(client, auth_key, &file_hash, deadline);
         let lookup = provider_record(
             &file_hash,
             LookupSubject::OriginalFileSha256,
@@ -125,26 +130,24 @@ pub(super) fn investigate_file(
     if should_query_threatfox(auth_key, &file_indicator, &threatfox_queries, true) {
         progress.checking("ThreatFox", &file_hash);
     }
-    let threatfox_file_lookup = threatfox_lookup_record(
+    let threatfox_file_lookup = threatfox_lookup_record_before(
         client,
         auth_key,
         &file_hash,
         IndicatorType::Hash,
-        LookupSubject::OriginalFileSha256,
         &mut threatfox_queries,
-        true,
+        LookupPolicy::new(LookupSubject::OriginalFileSha256, true, Some(deadline)),
     );
     progress.completed("ThreatFox", &file_hash, &threatfox_file_lookup.outcome);
     lookups.push(threatfox_file_lookup);
     progress.checking("URLhaus", &file_hash);
-    let urlhaus_file_lookup = urlhaus_lookup_record(
+    let urlhaus_file_lookup = urlhaus_lookup_record_before(
         client,
         auth_key,
         &file_hash,
         IndicatorType::Hash,
-        LookupSubject::OriginalFileSha256,
         &mut urlhaus_state,
-        true,
+        LookupPolicy::new(LookupSubject::OriginalFileSha256, true, Some(deadline)),
     );
     progress.completed("URLhaus", &file_hash, &urlhaus_file_lookup.outcome);
     lookups.push(urlhaus_file_lookup);
@@ -157,11 +160,12 @@ pub(super) fn investigate_file(
                     if hash_request_available(auth_key, &automatic_hash_lookups, &extracted.value) {
                         progress.checking("MalwareBazaar", &extracted.value);
                     }
-                    let lookup = show_hash_lookup(
+                    let lookup = show_hash_lookup_before(
                         client,
                         auth_key,
                         &extracted.value,
                         &mut automatic_hash_lookups,
+                        Some(deadline),
                     );
                     progress.completed("MalwareBazaar", &extracted.value, &lookup.outcome);
                     lookups.push(lookup);
@@ -192,45 +196,56 @@ pub(super) fn investigate_file(
                 ) {
                     progress.checking("ThreatFox", &extracted.value);
                 }
-                let threatfox_lookup = threatfox_lookup_record(
+                let threatfox_lookup = threatfox_lookup_record_before(
                     client,
                     auth_key,
                     &extracted.value,
                     extracted.indicator_type,
-                    LookupSubject::ExtractedIndicator,
                     &mut threatfox_queries,
-                    threatfox_allocation.contains(&threatfox_indicator_key(
-                        extracted.indicator_type,
-                        &extracted.value,
-                    )),
+                    LookupPolicy::new(
+                        LookupSubject::ExtractedIndicator,
+                        threatfox_allocation.contains(&threatfox_indicator_key(
+                            extracted.indicator_type,
+                            &extracted.value,
+                        )),
+                        Some(deadline),
+                    ),
                 );
                 progress.completed("ThreatFox", &extracted.value, &threatfox_lookup.outcome);
                 lookups.push(threatfox_lookup);
 
-                let urlhaus_lookup = urlhaus_lookup_record(
+                let urlhaus_lookup = urlhaus_lookup_record_before(
                     client,
                     auth_key,
                     &extracted.value,
                     extracted.indicator_type,
-                    LookupSubject::ExtractedIndicator,
                     &mut urlhaus_state,
-                    crate::providers::urlhaus::request_key(&indicator)
-                        .is_some_and(|key| urlhaus_allocation.contains(&key)),
+                    LookupPolicy::new(
+                        LookupSubject::ExtractedIndicator,
+                        crate::providers::urlhaus::request_key(&indicator)
+                            .is_some_and(|key| urlhaus_allocation.contains(&key)),
+                        Some(deadline),
+                    ),
                 );
                 progress.completed("URLhaus", &extracted.value, &urlhaus_lookup.outcome);
                 lookups.push(urlhaus_lookup);
                 if extracted.indicator_type == IndicatorType::Url
                     && let Some((host, host_type)) = host_from_url(&extracted.value)
                 {
-                    let host_lookup = urlhaus_lookup_record(
+                    let host_lookup = urlhaus_lookup_record_before(
                         client,
                         auth_key,
                         &host,
                         host_type,
-                        LookupSubject::ExtractedIndicator,
                         &mut urlhaus_state,
-                        crate::providers::urlhaus::request_key(&Indicator::new(&host, host_type))
+                        LookupPolicy::new(
+                            LookupSubject::ExtractedIndicator,
+                            crate::providers::urlhaus::request_key(&Indicator::new(
+                                &host, host_type,
+                            ))
                             .is_some_and(|key| urlhaus_allocation.contains(&key)),
+                            Some(deadline),
+                        ),
                     );
                     progress.completed("URLhaus host", &host, &host_lookup.outcome);
                     lookups.push(host_lookup);
@@ -255,25 +270,23 @@ pub(super) fn investigate_file(
     results::review(editor, &file, text_indicators.as_ref(), &lookups);
 
     terminal::clear_screen();
-    ui::header(
+    tui::header(
         "SAVE INVESTIGATION REPORT",
         "Create Markdown and JSON copies",
     );
-    ui::box_line(
+    tui::box_line(
         "  Save both report files in the local reports/ directory? They may contain sensitive indicators.",
     );
-    ui::navigation_footer("0", "Skip / return");
-    ui::close_box();
-    let answer = terminal::read_input(editor, "  Save report? [y/N]: ", false);
+    tui::navigation_footer("0", "Skip / return");
+    let answer = terminal::read_input(editor, "  Save report? [y/N]: ", false).unwrap_or_default();
     if matches!(answer.to_ascii_lowercase().as_str(), "y" | "yes") {
         match report::save_report(&report_snapshot, std::path::Path::new("reports")) {
             Ok((json, markdown)) => {
                 terminal::clear_screen();
-                ui::header("REPORTS SAVED", "Investigation evidence stored locally");
-                ui::field("JSON report", json.display());
-                ui::field("Markdown report", markdown.display());
-                ui::navigation_footer("Enter", "Return to the main menu");
-                ui::close_box();
+                tui::header("REPORTS SAVED", "Investigation evidence stored locally");
+                tui::field("JSON report", json.display());
+                tui::field("Markdown report", markdown.display());
+                tui::navigation_footer("Enter", "Return to the main menu");
                 terminal::pause();
             }
             Err(error) => {
@@ -285,15 +298,14 @@ pub(super) fn investigate_file(
 
 fn clear_file_prompt() {
     terminal::clear_screen();
-    ui::header("FILE INVESTIGATION", "Analyze a suspicious local file");
-    ui::box_line("");
-    ui::box_line("  The file will be read only as data for hashing and text inspection.");
-    ui::box_line("  CyberFeed will not execute or upload the file contents.");
-    ui::box_line(
+    tui::header("FILE INVESTIGATION", "Analyze a suspicious local file");
+    tui::box_line("");
+    tui::box_line("  The file will be read only as data for hashing and text inspection.");
+    tui::box_line("  CyberFeed will not execute or upload the file contents.");
+    tui::box_line(
         "  Configured providers receive the file SHA-256 and supported extracted indicators for lookup.",
     );
-    ui::navigation_footer("0", "Back / cancel");
-    ui::close_box();
+    tui::navigation_footer("0", "Back / cancel");
 }
 
 pub(super) fn check_indicator(
@@ -303,21 +315,32 @@ pub(super) fn check_indicator(
     investigation: &mut Investigation,
 ) {
     terminal::clear_screen();
-    ui::header(
+    tui::header(
         "CHECK A VALUE",
         "Search a hash, IP address, domain, or web address",
     );
-    ui::box_line("");
-    ui::box_line("  Enter a hash, IP address, domain, or HTTP/HTTPS URL.");
-    ui::box_line("  CyberFeed will identify the type automatically.");
-    ui::box_line("  Configured providers receive this indicator value for lookup.");
-    ui::navigation_footer("0", "Back / cancel");
-    ui::close_box();
+    tui::box_line("");
+    tui::box_line("  Enter a hash, IP address, domain, or HTTP/HTTPS URL.");
+    tui::box_line("  CyberFeed will identify the type automatically.");
+    tui::box_line("  Configured providers receive this indicator value for lookup.");
+    tui::navigation_footer("0", "Back / cancel");
 
-    let value = terminal::read_input(editor, "  Value: ", false);
+    let Some(value) = terminal::read_input(editor, "  Value: ", false) else {
+        return;
+    };
     if value == "0" {
         return;
     }
+    check_indicator_value(editor, client, auth_key, investigation, value);
+}
+
+pub(super) fn check_indicator_value(
+    editor: &mut InputEditor,
+    client: &Client,
+    auth_key: &str,
+    investigation: &mut Investigation,
+    value: String,
+) {
     if value.is_empty() {
         terminal::show_error("A hash, IP address, domain, or URL is required.");
         return;
@@ -363,66 +386,155 @@ pub(super) fn check_indicator(
         }
     };
 
-    let lookups = lookup_indicator_value(client, auth_key, &value, indicator_type);
+    tui::header("VALUE SEARCH", "Checking providers one at a time");
+    tui::field("Value", &value);
+    tui::note("A provider match applies to this indicator, not automatically to a file.");
+    tui::note("Unavailable and failed checks remain unknown; they are not no-match results.");
+    let lookups = lookup_indicator_value(
+        client,
+        auth_key,
+        &value,
+        indicator_type,
+        &mut |provider, result| match result {
+            Some(lookup) => tui::progress_line(
+                &format!("{provider}: {}", lookup.outcome.status()),
+                provider_views::status_kind(&lookup.outcome),
+            ),
+            None => tui::progress_line(
+                &format!("{provider}: checking this value…"),
+                tui::Status::Warning,
+            ),
+        },
+    );
 
     investigation.add_indicator_lookup(Indicator::new(value.clone(), indicator_type), &lookups);
 
-    terminal::clear_screen();
-    ui::header(
-        "VALUE SEARCH",
-        "Results from the providers that were checked",
-    );
-    ui::section("SUMMARY");
-    if lookups.iter().any(|lookup| {
+    review_value_results(editor, indicator_type, &value, &lookups);
+    save_indicator_check_prompt(editor, &value, indicator_type, &lookups);
+}
+
+fn review_value_results(
+    editor: &mut InputEditor,
+    indicator_type: IndicatorType,
+    value: &str,
+    lookups: &[report::ProviderLookup],
+) {
+    loop {
+        terminal::clear_screen();
+        render_value_summary(indicator_type, value, lookups);
+        tui::navigation_footer(
+            "D / 0",
+            "Detailed provider evidence / continue to save prompt",
+        );
+        let Some(choice) = terminal::read_input(editor, "  Choose D or 0: ", false) else {
+            return;
+        };
+        match choice.to_ascii_lowercase().as_str() {
+            "d" => {
+                terminal::clear_screen();
+                render_value_details(indicator_type, value, lookups);
+                tui::navigation_footer("Enter", "Return to the result summary");
+                terminal::pause();
+            }
+            "0" => return,
+            _ => terminal::invalid_choice(),
+        }
+    }
+}
+
+fn render_value_details(
+    indicator_type: IndicatorType,
+    value: &str,
+    lookups: &[report::ProviderLookup],
+) {
+    tui::header("VALUE SEARCH DETAILS", "Recorded provider evidence");
+    tui::field("Searched value", value);
+    tui::field("Detected type", indicator_type.as_str());
+    for record in lookups {
+        provider_views::display_value_lookup_details(
+            &record.provider,
+            &record.queried_hash,
+            &record.outcome,
+        );
+    }
+}
+
+fn render_value_summary(
+    indicator_type: IndicatorType,
+    value: &str,
+    lookups: &[report::ProviderLookup],
+) {
+    tui::header("VALUE SEARCH", "Summary of this indicator check");
+    let has_match = lookups.iter().any(|lookup| {
         matches!(
             lookup.outcome,
             LookupOutcome::Found(_)
                 | LookupOutcome::ThreatFoxFound { .. }
                 | LookupOutcome::UrlhausFound { .. }
         )
-    }) {
-        ui::box_line(
-            "At least one provider returned a matching record. Review its evidence below; this is not a verdict about a file.",
-        );
-    } else if lookups.iter().any(|lookup| {
+    });
+    let has_provider_failure = lookups.iter().any(|lookup| {
         matches!(
             lookup.outcome,
             LookupOutcome::ApiError { .. }
                 | LookupOutcome::RequestError { .. }
-                | LookupOutcome::Invalid { .. }
+                | LookupOutcome::TimedOut { .. }
         )
-    }) {
-        ui::box_line(
-            "One or more checks failed, so results are incomplete. See provider details below.",
+    });
+    tui::section("SUMMARY");
+    if has_match {
+        tui::box_line(
+            "A provider returned a matching record for this value. That is evidence about the indicator, not a verdict about a file.",
+        );
+        if has_provider_failure {
+            tui::warning("Other provider requests failed; their results remain unknown.");
+        }
+    } else if has_provider_failure
+        || lookups
+            .iter()
+            .any(|lookup| matches!(lookup.outcome, LookupOutcome::Invalid { .. }))
+    {
+        tui::box_line(
+            "One or more checks failed, so results are incomplete. Choose D to inspect the details.",
         );
     } else if lookups.iter().any(|lookup| {
         matches!(
             lookup.outcome,
             LookupOutcome::NotConfigured
                 | LookupOutcome::SkippedLookupLimit
+                | LookupOutcome::SkippedDeadline { .. }
+                | LookupOutcome::TimedOut { .. }
                 | LookupOutcome::Unsupported { .. }
         )
     }) {
-        ui::box_line("Some providers could not check this value. Review which checks ran below.");
+        tui::box_line(
+            "Some providers could not check this value. Choose D to review coverage details.",
+        );
     } else {
-        ui::box_line(
+        tui::box_line(
             "No matching record was returned by the checks performed. This does not prove safety.",
         );
     }
-    ui::section("VALUE");
-    ui::indicator_details(indicator_type.as_str(), &value);
-    ui::section("PROVIDER RESULTS");
-    for record in &lookups {
-        provider_views::display_lookup(&record.provider, &record.queried_hash, &record.outcome);
+    tui::section("CHECKED VALUE");
+    tui::indicator_details(indicator_type.as_str(), value);
+    tui::section("PROVIDER COVERAGE");
+    if lookups.is_empty() {
+        tui::field("Providers", "No checks were recorded");
     }
-    if lookups
-        .iter()
-        .any(|record| record.outcome == LookupOutcome::NotFound)
-    {
-        ui::warning("NOT FOUND is a provider response at lookup time, not a safety verdict.");
+    for record in lookups {
+        let label = if record.provider == "URLhaus" && record.queried_hash != value {
+            format!("URLhaus host · {}", record.queried_hash)
+        } else {
+            record.provider.clone()
+        };
+        tui::status(
+            &label,
+            record.outcome.status(),
+            provider_views::status_kind(&record.outcome),
+        );
     }
-    ui::close_box();
-    save_indicator_check_prompt(editor, &value, indicator_type, &lookups);
+    tui::note("NOT FOUND means no record was returned at lookup time; it does not mean safe.");
+    tui::note("Choose D to see source details and metadata, or 0 to continue to saving.");
 }
 
 fn save_indicator_check_prompt(
@@ -432,13 +544,13 @@ fn save_indicator_check_prompt(
     lookups: &[report::ProviderLookup],
 ) {
     terminal::clear_screen();
-    ui::header("SAVE INDICATOR CHECK", "Save this lookup for Saved Reports");
-    ui::indicator_details(indicator_type.as_str(), value);
-    ui::box_line("The report contains this indicator and its recorded provider outcomes.");
-    ui::warning("Reports may contain sensitive indicators and provider evidence.");
-    ui::navigation_footer("Enter", "Skip saving and return to Current Session");
-    ui::close_box();
-    let answer = terminal::read_input(editor, "  Save this indicator check? [y/N]: ", false);
+    tui::header("SAVE INDICATOR CHECK", "Save this lookup for Saved Reports");
+    tui::indicator_details(indicator_type.as_str(), value);
+    tui::box_line("The report contains this indicator and its recorded provider outcomes.");
+    tui::warning("Reports may contain sensitive indicators and provider evidence.");
+    tui::navigation_footer("Enter", "Skip saving and return to Current Session");
+    let answer = terminal::read_input(editor, "  Save this indicator check? [y/N]: ", false)
+        .unwrap_or_default();
     if !matches!(answer.to_ascii_lowercase().as_str(), "y" | "yes") {
         return;
     }
@@ -447,11 +559,10 @@ fn save_indicator_check_prompt(
     match report::save_indicator_report(&indicator, lookups, std::path::Path::new("reports")) {
         Ok((json, markdown)) => {
             terminal::clear_screen();
-            ui::header("INDICATOR CHECK SAVED", "Available in Saved Reports");
-            ui::field("JSON report", json.display());
-            ui::field("Markdown report", markdown.display());
-            ui::navigation_footer("Enter", "Return to Current Session");
-            ui::close_box();
+            tui::header("INDICATOR CHECK SAVED", "Available in Saved Reports");
+            tui::field("JSON report", json.display());
+            tui::field("Markdown report", markdown.display());
+            tui::navigation_footer("Enter", "Return to Current Session");
             terminal::pause();
         }
         Err(error) => terminal::show_error(&format!("Could not save indicator report: {error}")),
@@ -465,13 +576,13 @@ pub(super) fn view_indicators(investigation: &Investigation) {
 }
 
 fn render_current_session(investigation: &Investigation) {
-    ui::header(
+    tui::header(
         "CURRENT SESSION",
         "Values checked and results recorded so far",
     );
     investigation.display_indicators();
     if !investigation.provider_lookups().is_empty() {
-        ui::section("PROVIDER OBSERVATIONS");
+        tui::section("PROVIDER OBSERVATIONS");
         for lookup in investigation.provider_lookups() {
             provider_views::display_lookup(&lookup.provider, &lookup.queried_hash, &lookup.outcome);
         }
@@ -480,10 +591,9 @@ fn render_current_session(investigation: &Investigation) {
             .iter()
             .any(|lookup| lookup.outcome == LookupOutcome::NotFound)
         {
-            ui::warning("NOT FOUND is a provider response at lookup time, not a safety verdict.");
+            tui::warning("NOT FOUND is a provider response at lookup time, not a safety verdict.");
         }
     }
-    ui::close_box();
 }
 
 fn lookup_indicator_value(
@@ -491,59 +601,80 @@ fn lookup_indicator_value(
     auth_key: &str,
     value: &str,
     indicator_type: IndicatorType,
+    progress: &mut dyn FnMut(&str, Option<&report::ProviderLookup>),
 ) -> Vec<report::ProviderLookup> {
+    let deadline = LookupDeadline::at(std::time::Instant::now() + INVESTIGATION_BUDGET);
     let mut lookups = Vec::new();
     let is_hash = matches!(indicator_type, IndicatorType::Hash);
     let malwarebazaar_configured = is_hash && !auth_key.trim().is_empty();
+    if malwarebazaar_configured {
+        progress("MalwareBazaar", None);
+    }
     let mb_outcome = if is_hash {
         if !malwarebazaar_configured {
             LookupOutcome::NotConfigured
         } else {
-            lookup_hash_record(client, auth_key, value)
+            lookup_hash_record_before(client, auth_key, value, deadline)
         }
     } else {
         LookupOutcome::Unsupported {
             explanation: "MalwareBazaar hash lookups do not support IP/domain indicators.".into(),
         }
     };
-    lookups.push(provider_record(
+    let mb_lookup = provider_record(
         value,
         LookupSubject::ExtractedIndicator,
         malwarebazaar_configured.then(now_seconds),
         mb_outcome,
-    ));
+    );
+    progress("MalwareBazaar", Some(&mb_lookup));
+    lookups.push(mb_lookup);
     let mut queries = HashSet::new();
-    lookups.push(threatfox_lookup_record(
+    let threatfox_supported = indicator_type != IndicatorType::Hash || value.len() != 40;
+    if !auth_key.trim().is_empty() && threatfox_supported {
+        progress("ThreatFox", None);
+    }
+    let threatfox_lookup = threatfox_lookup_record_before(
         client,
         auth_key,
         value,
         indicator_type,
-        LookupSubject::ExtractedIndicator,
         &mut queries,
-        true,
-    ));
+        LookupPolicy::new(LookupSubject::ExtractedIndicator, true, Some(deadline)),
+    );
+    progress("ThreatFox", Some(&threatfox_lookup));
+    lookups.push(threatfox_lookup);
     let mut urlhaus_state = UrlhausRequestState::default();
-    lookups.push(urlhaus_lookup_record(
+    let urlhaus_supported = indicator_type != IndicatorType::Hash || value.len() != 40;
+    if !auth_key.trim().is_empty() && urlhaus_supported {
+        progress("URLhaus exact value", None);
+    }
+    let urlhaus_lookup = urlhaus_lookup_record_before(
         client,
         auth_key,
         value,
         indicator_type,
-        LookupSubject::ExtractedIndicator,
         &mut urlhaus_state,
-        true,
-    ));
+        LookupPolicy::new(LookupSubject::ExtractedIndicator, true, Some(deadline)),
+    );
+    progress("URLhaus exact value", Some(&urlhaus_lookup));
+    lookups.push(urlhaus_lookup);
     if indicator_type == IndicatorType::Url
         && let Some((host, host_type)) = host_from_url(value)
     {
-        lookups.push(urlhaus_lookup_record(
+        if !auth_key.trim().is_empty() {
+            progress("URLhaus related host", None);
+        }
+        let host_lookup = urlhaus_lookup_record_before(
             client,
             auth_key,
             &host,
             host_type,
-            LookupSubject::ExtractedIndicator,
             &mut urlhaus_state,
-            true,
-        ));
+            LookupPolicy::new(LookupSubject::ExtractedIndicator, true, Some(deadline)),
+        );
+        progress("URLhaus related host", Some(&host_lookup));
+        lookups.push(host_lookup);
     }
     lookups
 }
@@ -551,13 +682,12 @@ fn lookup_indicator_value(
 #[cfg(test)]
 mod tests {
     use super::lookups::{
-        AutomaticLookup, MAX_AUTOMATIC_MALWAREBAZAAR_LOOKUPS, MAX_AUTOMATIC_THREATFOX_LOOKUPS,
-        UrlhausRequestState, allocate_threatfox_indicators, allocate_urlhaus_requests,
-        claim_threatfox_lookup, outcome_from_malwarebazaar_result, redact_secret,
-        should_lookup_hash, threatfox_error_outcome, threatfox_indicator_key,
-        threatfox_lookup_record, threatfox_outcome, urlhaus_lookup_record,
+        AutomaticLookup, LookupPolicy, MAX_AUTOMATIC_MALWAREBAZAAR_LOOKUPS,
+        MAX_AUTOMATIC_THREATFOX_LOOKUPS, UrlhausRequestState, allocate_threatfox_indicators,
+        allocate_urlhaus_requests, claim_threatfox_lookup, outcome_from_malwarebazaar_result,
+        redact_secret, should_lookup_hash, threatfox_error_outcome, threatfox_indicator_key,
+        threatfox_lookup_record_before, threatfox_outcome, urlhaus_lookup_record_before,
     };
-    use crate::file::inspect_file;
     use crate::indicator::{Indicator, IndicatorType};
     use crate::investigation::Investigation;
     use crate::providers::malwarebazaar::{MalwareLookupError, MalwareLookupResult, MalwareSample};
@@ -575,7 +705,8 @@ mod tests {
         ];
 
         for (value, indicator_type) in checks {
-            let lookups = super::lookup_indicator_value(&client, "", &value, indicator_type);
+            let lookups =
+                super::lookup_indicator_value(&client, "", &value, indicator_type, &mut |_, _| {});
             assert_eq!(lookups.len(), 3);
             assert!(lookups.iter().all(|lookup| matches!(
                 lookup.outcome,
@@ -590,6 +721,129 @@ mod tests {
                 ));
             }
         }
+    }
+
+    #[test]
+    fn value_details_show_exact_query_type_and_wrap_long_provider_text() {
+        let value = format!(
+            "https://example.test/{}?download=sample&part=two",
+            "long-path-segment-".repeat(5)
+        );
+        let lookups = vec![
+            ProviderLookup {
+                provider: "URLhaus".into(),
+                subject: LookupSubject::ExtractedIndicator,
+                queried_hash: value.clone(),
+                retrieved_at_unix_seconds: Some(1),
+                outcome: LookupOutcome::NotFound,
+            },
+            ProviderLookup {
+                provider: "ThreatFox".into(),
+                subject: LookupSubject::ExtractedIndicator,
+                queried_hash: value.clone(),
+                retrieved_at_unix_seconds: None,
+                outcome: LookupOutcome::ApiError {
+                    explanation: format!("provider detail {} end-marker", "context ".repeat(18)),
+                },
+            },
+        ];
+
+        crate::tui::reset_screen();
+        super::render_value_details(IndicatorType::Url, &value, &lookups);
+        crate::tui::navigation_footer("Enter", "Return to the result summary");
+        let lines = crate::tui::test_rendered_lines(40, 120);
+        let rendered = lines.join("");
+        let content = rendered
+            .chars()
+            .filter(|character| !matches!(character, '│' | ' '))
+            .collect::<String>();
+
+        assert!(content.contains(&value));
+        assert!(lines.iter().any(|line| line.contains("URL")));
+        assert!(lines.iter().any(|line| line.contains("NOT FOUND")));
+        assert!(lines.iter().any(|line| line.contains("API ERROR")));
+        assert!(rendered.contains("end-marker"));
+        assert!(rendered.contains("Return to the result summary"));
+        assert!(!rendered.contains("does not establish"));
+        assert!(
+            lines
+                .iter()
+                .all(|line| crate::tui::visible_width(line) <= 40)
+        );
+    }
+
+    #[test]
+    fn value_search_progress_is_ordered_and_summary_keeps_provider_details_separate() {
+        let client = reqwest::blocking::Client::new();
+        let value = "https://example.test/path";
+        let mut progress = Vec::new();
+        let lookups = super::lookup_indicator_value(
+            &client,
+            "",
+            value,
+            IndicatorType::Url,
+            &mut |provider, result| {
+                progress.push((
+                    provider.to_owned(),
+                    result.map(|lookup| lookup.outcome.status().to_owned()),
+                ));
+            },
+        );
+        assert_eq!(
+            progress,
+            [
+                ("MalwareBazaar".into(), Some("UNSUPPORTED".into())),
+                ("ThreatFox".into(), Some("NOT CONFIGURED".into())),
+                ("URLhaus exact value".into(), Some("NOT CONFIGURED".into())),
+                ("URLhaus related host".into(), Some("NOT CONFIGURED".into())),
+            ]
+        );
+
+        crate::tui::reset_screen();
+        super::render_value_summary(IndicatorType::Url, value, &lookups);
+        let summary = crate::tui::test_rendered_lines(100, 40).join("\n");
+        assert!(summary.contains("CHECKED VALUE"));
+        assert!(summary.contains("UNSUPPORTED"));
+        assert!(summary.contains("NOT CONFIGURED"));
+        assert!(summary.contains("URLhaus host · example.test"));
+        assert!(summary.contains("does not mean safe"));
+        assert!(!summary.contains("ABUSECH_AUTH_KEY"));
+    }
+
+    #[test]
+    fn value_summary_keeps_a_match_and_other_provider_failures_visible() {
+        let lookups = vec![
+            ProviderLookup {
+                provider: "MalwareBazaar".into(),
+                subject: LookupSubject::ExtractedIndicator,
+                queried_hash: "a".repeat(64),
+                retrieved_at_unix_seconds: Some(1),
+                outcome: LookupOutcome::Found(crate::report::MatchDetails {
+                    matched_sha256: "a".repeat(64),
+                    first_seen: "2026-01-01".into(),
+                    file_type: "PE32".into(),
+                    sample_filename: None,
+                    signature: None,
+                }),
+            },
+            ProviderLookup {
+                provider: "ThreatFox".into(),
+                subject: LookupSubject::ExtractedIndicator,
+                queried_hash: "a".repeat(64),
+                retrieved_at_unix_seconds: None,
+                outcome: LookupOutcome::RequestError {
+                    explanation: "offline".into(),
+                },
+            },
+        ];
+        crate::tui::reset_screen();
+        super::render_value_summary(IndicatorType::Hash, &"a".repeat(64), &lookups);
+        let rendered = crate::tui::test_rendered_lines(100, 40).join("\n");
+        assert!(rendered.contains("matching record for this value"));
+        assert!(rendered.contains("Other provider requests failed"));
+        assert!(rendered.contains("FOUND"));
+        assert!(rendered.contains("REQUEST ERROR"));
+        assert!(rendered.contains("does not mean safe"));
     }
 
     #[test]
@@ -624,9 +878,9 @@ mod tests {
             }],
         );
 
-        crate::ui::reset_screen();
+        crate::tui::reset_screen();
         super::render_current_session(&investigation);
-        let rendered = crate::ui::recorded_line_texts().join("\n");
+        let rendered = crate::tui::test_rendered_lines(160, 512).join("\n");
 
         assert!(rendered.contains("file-domain.test"));
         assert!(rendered.contains("198.51.100.8"));
@@ -695,26 +949,137 @@ mod tests {
     }
 
     #[test]
+    fn urlhaus_allocation_is_fair_for_the_bundled_new_test_report() {
+        let report: InvestigationReport = serde_json::from_str(include_str!(
+            "../../reports/cyberfeed-new_test-1792600506.json"
+        ))
+        .unwrap();
+        let indicators = &report.local_inspection.indicators;
+        let counts = indicators
+            .iter()
+            .fold([0usize; 4], |mut counts, indicator| {
+                counts[match indicator.indicator_type {
+                    IndicatorType::Hash => 0,
+                    IndicatorType::IP => 1,
+                    IndicatorType::Domain => 2,
+                    IndicatorType::Url => 3,
+                }] += 1;
+                counts
+            });
+        assert_eq!(counts, [6, 5, 6, 0]);
+
+        let allocated = allocate_urlhaus_requests(indicators, &report.file.sha256);
+        assert_eq!(allocated.len(), 10);
+        assert_eq!(
+            allocated
+                .iter()
+                .filter(|key| key.starts_with("Md5:") || key.starts_with("Sha256:"))
+                .count(),
+            4 // Three extracted payloads plus the reserved original file hash.
+        );
+        assert_eq!(
+            allocated
+                .iter()
+                .filter(|key| key.starts_with("Host:"))
+                .count(),
+            6
+        );
+        assert_eq!(
+            allocated
+                .iter()
+                .filter(|key| key.starts_with("Host:"))
+                .filter(|key| {
+                    let host = key.trim_start_matches("Host:");
+                    host.parse::<std::net::Ipv4Addr>().is_ok()
+                })
+                .count(),
+            3
+        );
+        assert_eq!(
+            allocated
+                .iter()
+                .filter(|key| {
+                    key.starts_with("Host:")
+                        && key
+                            .trim_start_matches("Host:")
+                            .parse::<std::net::Ipv4Addr>()
+                            .is_err()
+                })
+                .count(),
+            3
+        );
+
+        let reversed = indicators.iter().rev().cloned().collect::<Vec<_>>();
+        let reverse_allocation = allocate_urlhaus_requests(&reversed, &report.file.sha256);
+        assert_eq!(reverse_allocation.len(), 10);
+        assert_eq!(
+            reverse_allocation
+                .iter()
+                .filter(|key| {
+                    key.starts_with("Host:")
+                        && key
+                            .trim_start_matches("Host:")
+                            .parse::<std::net::Ipv4Addr>()
+                            .is_ok()
+                })
+                .count(),
+            3
+        );
+        assert_eq!(
+            allocate_urlhaus_requests(indicators, &report.file.sha256),
+            allocated,
+            "allocation must be deterministic for the same input order"
+        );
+    }
+
+    #[test]
+    fn host_pivots_validate_the_complete_url_and_keep_supported_parts() {
+        assert_eq!(super::lookups::host_from_url("http://61.177.172"), None);
+        assert_eq!(
+            super::lookups::host_from_url("http://61.177.172.8/path"),
+            Some(("61.177.172.8".into(), IndicatorType::IP))
+        );
+        assert_eq!(
+            super::lookups::host_from_url("https://example.test:8443/path?value=One&next=Two"),
+            Some(("example.test".into(), IndicatorType::Domain))
+        );
+        assert!(crate::indicator::is_http_url(
+            "https://[2001:db8::1]:8443/path?q=one"
+        ));
+        assert_eq!(
+            super::lookups::host_from_url("http://[2001:db8::1]:8080/path"),
+            None,
+            "URLhaus does not support IPv6 host lookups"
+        );
+    }
+
+    #[test]
     fn unallocated_urlhaus_request_is_reported_skipped_then_deduplicated_without_network() {
         let client = reqwest::blocking::Client::new();
         let mut state = UrlhausRequestState::default();
-        let first = urlhaus_lookup_record(
+        let first = urlhaus_lookup_record_before(
             &client,
             "test-key",
             "https://example.test/a",
             IndicatorType::Url,
-            crate::report::LookupSubject::ExtractedIndicator,
             &mut state,
-            false,
+            LookupPolicy::new(
+                crate::report::LookupSubject::ExtractedIndicator,
+                false,
+                None,
+            ),
         );
-        let duplicate = urlhaus_lookup_record(
+        let duplicate = urlhaus_lookup_record_before(
             &client,
             "test-key",
             "https://example.test/a",
             IndicatorType::Url,
-            crate::report::LookupSubject::ExtractedIndicator,
             &mut state,
-            false,
+            LookupPolicy::new(
+                crate::report::LookupSubject::ExtractedIndicator,
+                false,
+                None,
+            ),
         );
         assert_eq!(first.outcome, LookupOutcome::SkippedLookupLimit);
         assert!(matches!(
@@ -870,7 +1235,7 @@ mod tests {
         let domain2 = "beta-threat.test";
         std::fs::write(&path2, format!("{hash2}\n{ip2}\n{domain2}\n")).unwrap();
 
-        let insp1 = inspect_file(&path1).expect("file 1 inspection");
+        let insp1 = crate::file::inspect_file(&path1).expect("file 1 inspection");
         let inds1 = insp1.text_indicators.expect("file 1 text").indicators;
         assert_eq!(inds1.len(), 3);
         assert_eq!(inds1[0].value, hash1);
@@ -893,7 +1258,7 @@ mod tests {
         assert!(mb_body1.contains(&hash1));
         assert!(!mb_body1.contains(&hash2));
 
-        let insp2 = inspect_file(&path2).expect("file 2 inspection");
+        let insp2 = crate::file::inspect_file(&path2).expect("file 2 inspection");
         let inds2 = insp2.text_indicators.expect("file 2 text").indicators;
         assert_eq!(inds2.len(), 3);
         assert_eq!(inds2[0].value, hash2);
@@ -931,23 +1296,21 @@ mod tests {
         let ind2 = "203.0.113.2";
 
         let mut queries = HashSet::new();
-        let rec1 = threatfox_lookup_record(
+        let rec1 = threatfox_lookup_record_before(
             &client,
             "",
             ind1,
             IndicatorType::IP,
-            LookupSubject::ExtractedIndicator,
             &mut queries,
-            true,
+            LookupPolicy::new(LookupSubject::ExtractedIndicator, true, None),
         );
-        let rec2 = threatfox_lookup_record(
+        let rec2 = threatfox_lookup_record_before(
             &client,
             "",
             ind2,
             IndicatorType::IP,
-            LookupSubject::ExtractedIndicator,
             &mut queries,
-            true,
+            LookupPolicy::new(LookupSubject::ExtractedIndicator, true, None),
         );
 
         assert_eq!(rec1.queried_hash, ind1);

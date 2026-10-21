@@ -7,7 +7,7 @@ use crate::providers::cloudflare::{
     fetch_cloudflare_attack_pairs, fetch_cloudflare_data, fetch_cloudflare_targets,
 };
 use crate::providers::malwarebazaar::fetch_malware_data;
-use crate::ui;
+use crate::tui;
 use reqwest::blocking::Client;
 use std::time::Duration;
 
@@ -27,20 +27,22 @@ pub(super) fn menu(
 ) {
     loop {
         terminal::clear_screen();
-        ui::header("THREAT FEEDS", "Browse optional, live public data");
-        ui::box_line("");
-        ui::menu_item(
+        tui::header("THREAT FEEDS", "Browse optional, live public data");
+        tui::box_line("");
+        tui::menu_item(
             "1",
             "MalwareBazaar",
             "Browse recently reported malware samples",
         );
-        ui::menu_item("2", "Cloudflare Radar", "View broad internet attack trends");
-        ui::box_line("");
-        ui::menu_item("0", "Back", "Return to the main menu");
-        ui::box_line("");
-        ui::close_box();
+        tui::menu_item("2", "Cloudflare Radar", "View broad internet attack trends");
+        tui::box_line("");
+        tui::menu_item("0", "Back", "Return to the main menu");
+        tui::box_line("");
 
-        match terminal::read_input(editor, "\n  Select an option: ", false).as_str() {
+        let Some(selection) = terminal::read_input(editor, "\n  Select an option: ", false) else {
+            break;
+        };
+        match selection.as_str() {
             "1" => malwarebazaar_menu(editor, client, auth_key, investigation),
             "2" => cloudflare_menu(editor, client, cloudflare_token),
             "0" => break,
@@ -57,20 +59,22 @@ fn malwarebazaar_menu(
 ) {
     loop {
         terminal::clear_screen();
-        ui::header("MALWAREBAZAAR", "Recently reported malware samples");
-        ui::box_line("");
-        ui::menu_item(
+        tui::header("MALWAREBAZAAR", "Recently reported malware samples");
+        tui::box_line("");
+        tui::menu_item(
             "1",
             "Recent Samples",
             "View the latest MalwareBazaar samples",
         );
-        ui::menu_item("2", "Choose a Country", "Narrow the sample list by country");
-        ui::box_line("");
-        ui::menu_item("0", "Back", "Return to Threat Intelligence");
-        ui::box_line("");
-        ui::close_box();
+        tui::menu_item("2", "Choose a Country", "Narrow the sample list by country");
+        tui::box_line("");
+        tui::menu_item("0", "Back", "Return to Threat Intelligence");
+        tui::box_line("");
 
-        match terminal::read_input(editor, "\n  Select an option: ", false).as_str() {
+        let Some(selection) = terminal::read_input(editor, "\n  Select an option: ", false) else {
+            break;
+        };
+        match selection.as_str() {
             "1" if auth_key.trim().is_empty() => terminal::show_error(
                 "Set ABUSECH_AUTH_KEY in the environment or .env to use MalwareBazaar.",
             ),
@@ -99,12 +103,14 @@ fn filter_malware_samples(
     investigation: &mut Investigation,
 ) {
     terminal::clear_screen();
-    ui::header("MALWAREBAZAAR", "Filter recent samples by origin country");
-    ui::box_line("  Enter a two-letter country code (for example, NP).");
-    ui::navigation_footer("0", "Back / cancel");
-    ui::close_box();
+    tui::header("MALWAREBAZAAR", "Filter recent samples by origin country");
+    tui::box_line("  Enter a two-letter country code (for example, NP).");
+    tui::navigation_footer("0", "Back / cancel");
 
-    let country = terminal::read_input(editor, "\n  Country code: ", false).to_uppercase();
+    let Some(country) = terminal::read_input(editor, "\n  Country code: ", false) else {
+        return;
+    };
+    let country = country.to_uppercase();
     if country == "0" {
         return;
     }
@@ -130,17 +136,19 @@ fn filter_malware_samples(
 fn cloudflare_menu(editor: &mut InputEditor, client: &Client, token: &str) {
     loop {
         terminal::clear_screen();
-        ui::header("CLOUDFLARE RADAR", "Live internet attack trends");
-        ui::box_line("");
-        ui::menu_item("1", "Top Attack Origins", "Countries where attacks begin");
-        ui::menu_item("2", "Top Attack Targets", "Countries receiving attacks");
-        ui::menu_item("3", "Top Attack Pairs", "Origin to target activity");
-        ui::box_line("");
-        ui::menu_item("0", "Back", "Return to Threat Intelligence");
-        ui::box_line("");
-        ui::close_box();
+        tui::header("CLOUDFLARE RADAR", "Live internet attack trends");
+        tui::box_line("");
+        tui::menu_item("1", "Top Attack Origins", "Countries where attacks begin");
+        tui::menu_item("2", "Top Attack Targets", "Countries receiving attacks");
+        tui::menu_item("3", "Top Attack Pairs", "Origin to target activity");
+        tui::box_line("");
+        tui::menu_item("0", "Back", "Return to Threat Intelligence");
+        tui::box_line("");
 
-        match terminal::read_input(editor, "\n  Select an option: ", false).as_str() {
+        let Some(selection) = terminal::read_input(editor, "\n  Select an option: ", false) else {
+            break;
+        };
+        match selection.as_str() {
             "1" if token.trim().is_empty() => terminal::show_error(
                 "Set CLOUDFLARE_API_TOKEN in the environment or .env to use Cloudflare Radar.",
             ),
@@ -167,76 +175,124 @@ fn run_cloudflare_feed(editor: &mut InputEditor, client: &Client, token: &str, f
     const MAX_REFRESHES: usize = 5;
     for refresh in 0..MAX_REFRESHES {
         terminal::clear_screen();
-        ui::header("CLOUDFLARE RADAR", "Live internet attack trends");
-        ui::box_line("");
+        tui::header("CLOUDFLARE RADAR", "Live internet attack trends");
+        show_refresh_progress(feed, refresh + 1, MAX_REFRESHES);
 
-        match feed {
+        let succeeded = match feed {
             Feed::Origins => match fetch_cloudflare_data(client, token) {
-                Ok(data) if data.success => display_top_origins(&data.result),
-                Ok(_) => ui::error("Cloudflare returned an unsuccessful response."),
+                Ok(data) if data.success => {
+                    display_top_origins(&data.result);
+                    true
+                }
+                Ok(_) => {
+                    tui::error("Cloudflare returned an unsuccessful response.");
+                    false
+                }
                 Err(error) => {
-                    ui::error("Cloudflare request failed.");
-                    ui::field("Details", error);
+                    tui::error("Cloudflare request failed.");
+                    tui::field("Details", error);
+                    false
                 }
             },
             Feed::Targets => match fetch_cloudflare_targets(client, token) {
-                Ok(data) if data.success => display_top_targets(&data.result),
-                Ok(_) => ui::error("Cloudflare returned an unsuccessful response."),
+                Ok(data) if data.success => {
+                    display_top_targets(&data.result);
+                    true
+                }
+                Ok(_) => {
+                    tui::error("Cloudflare returned an unsuccessful response.");
+                    false
+                }
                 Err(error) => {
-                    ui::error("Cloudflare request failed.");
-                    ui::field("Details", error);
+                    tui::error("Cloudflare request failed.");
+                    tui::field("Details", error);
+                    false
                 }
             },
             Feed::Pairs => match fetch_cloudflare_attack_pairs(client, token) {
-                Ok(data) if data.success => display_top_attack_pairs(&data.result),
-                Ok(_) => ui::error("Cloudflare returned an unsuccessful response."),
+                Ok(data) if data.success => {
+                    display_top_attack_pairs(&data.result);
+                    true
+                }
+                Ok(_) => {
+                    tui::error("Cloudflare returned an unsuccessful response.");
+                    false
+                }
                 Err(error) => {
-                    ui::error("Cloudflare request failed.");
-                    ui::field("Details", error);
+                    tui::error("Cloudflare request failed.");
+                    tui::field("Details", error);
+                    false
                 }
             },
-        }
+        };
+        tui::status(
+            "Refresh",
+            if succeeded {
+                "Complete"
+            } else {
+                "Failed · see details"
+            },
+            if succeeded {
+                tui::Status::Success
+            } else {
+                tui::Status::Error
+            },
+        );
+        tui::redraw_current_screen();
 
-        ui::box_line("");
-        ui::divider();
+        tui::box_line("");
+        tui::divider();
         let current = refresh + 1;
         if current < MAX_REFRESHES {
-            ui::centered_box_line(&format!(
+            tui::box_line(&format!(
                 "Refresh {current}/{MAX_REFRESHES} • Next update in {}",
                 terminal::format_duration(interval)
             ));
-            ui::centered_box_line("Esc / q: Stop live refresh and return to Cloudflare Radar");
-            ui::close_box();
+            tui::box_line("Esc / q stops automatic refresh after this response completes");
+            tui::redraw_current_screen();
             if terminal::wait_for_refresh(interval) {
                 return;
             }
         } else {
-            ui::centered_box_line("Refresh limit reached");
-            ui::close_box();
+            tui::box_line("Refresh limit reached");
             terminal::pause();
         }
     }
 }
 
+fn show_refresh_progress(feed: Feed, current: usize, total: usize) {
+    let label = match feed {
+        Feed::Origins => "attack origins",
+        Feed::Targets => "attack targets",
+        Feed::Pairs => "origin-to-target pairs",
+    };
+    tui::progress_line(
+        &format!("Request {current}/{total}: fetching {label} from Cloudflare Radar…"),
+        tui::Status::Warning,
+    );
+    tui::note("This feed arrives as one response; results appear when that response is parsed.");
+    tui::redraw_current_screen();
+}
+
 fn choose_refresh_interval(editor: &mut InputEditor) -> Option<Duration> {
     loop {
         terminal::clear_screen();
-        ui::header(
+        tui::header(
             "REFRESH INTERVAL",
             "Choose how often Cloudflare data refreshes",
         );
-        ui::box_line("");
-        ui::menu_item("1", "5 seconds", "Fast refresh");
-        ui::menu_item("2", "10 seconds", "Short refresh");
-        ui::menu_item("3", "30 seconds", "Moderate refresh");
-        ui::menu_item("4", "1 minute", "Long refresh");
-        ui::menu_item("5", "5 minutes", "Slow refresh");
-        ui::box_line("");
-        ui::menu_item("0", "Back", "Return to Cloudflare Radar");
-        ui::box_line("");
-        ui::close_box();
+        tui::box_line("");
+        tui::menu_item("1", "5 seconds", "Fast refresh");
+        tui::menu_item("2", "10 seconds", "Short refresh");
+        tui::menu_item("3", "30 seconds", "Moderate refresh");
+        tui::menu_item("4", "1 minute", "Long refresh");
+        tui::menu_item("5", "5 minutes", "Slow refresh");
+        tui::box_line("");
+        tui::menu_item("0", "Back", "Return to Cloudflare Radar");
+        tui::box_line("");
 
-        match terminal::read_input(editor, "\n  Select an option: ", false).as_str() {
+        let selection = terminal::read_input(editor, "\n  Select an option: ", false)?;
+        match selection.as_str() {
             "1" => return Some(Duration::from_secs(5)),
             "2" => return Some(Duration::from_secs(10)),
             "3" => return Some(Duration::from_secs(30)),
@@ -245,5 +301,22 @@ fn choose_refresh_interval(editor: &mut InputEditor) -> Option<Duration> {
             "0" => return None,
             _ => terminal::invalid_choice(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Feed, show_refresh_progress};
+
+    #[test]
+    fn cloudflare_refresh_progress_is_visible_before_the_single_response_arrives() {
+        crate::tui::reset_screen();
+        crate::tui::header("CLOUDFLARE RADAR", "Live internet attack trends");
+        show_refresh_progress(Feed::Targets, 2, 5);
+        let rendered = crate::tui::test_rendered_lines(80, 12).join("\n");
+        assert!(rendered.contains("Request 2/5"));
+        assert!(rendered.contains("fetching attack targets"));
+        assert!(rendered.contains("one response"));
+        assert!(rendered.contains("CLOUDFLARE RADAR"));
     }
 }

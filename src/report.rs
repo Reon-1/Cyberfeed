@@ -14,13 +14,12 @@ mod tests {
     use crate::file::FileInfo;
     use crate::indicator::{Indicator, IndicatorType};
     use std::fs;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
-
     fn unique_test_path(label: &str) -> std::path::PathBuf {
-        let id = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("cyberfeed-{label}-{}-{id}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "cyberfeed-{label}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ))
     }
     #[test]
     fn report_round_trips_and_has_versioned_metadata() {
@@ -268,7 +267,7 @@ mod tests {
         assert!(
             report
                 .to_markdown()
-                .contains("Extracted hash provider outcomes: 1 found, 2 not found")
+                .contains("Extracted hash-only provider outcomes: 1 found, 2 not found")
         );
     }
 

@@ -3,25 +3,25 @@ use crate::indicator::{Indicator, IndicatorType};
 use crate::providers::cloudflare::{TopAttackPairs, TopOrigins, TopTargets};
 use crate::providers::malwarebazaar::{MalwareResponse, MalwareSample};
 use crate::report::{LookupOutcome, MatchDetails};
-use crate::ui;
+use crate::tui;
 
 pub(crate) fn display_lookup(provider: &str, indicator: &str, outcome: &LookupOutcome) {
     let status = outcome.status();
-    ui::status(provider, status, status_kind(outcome));
-    ui::field("Meaning", ui::outcome_explanation(outcome));
-    ui::field("Indicator", indicator);
+    tui::status(provider, status, status_kind(outcome));
+    tui::field("Meaning", tui::outcome_explanation(outcome));
+    tui::field("Indicator", indicator);
     match outcome {
         LookupOutcome::Found(details) => display_malwarebazaar_match(details),
         LookupOutcome::ThreatFoxFound { findings } => {
             if findings.is_empty() {
-                ui::field(
+                tui::field(
                     "Details",
                     "The stored result is marked FOUND but contains no IOC records.",
                 );
             }
             for (index, finding) in findings.iter().enumerate() {
                 if findings.len() > 1 {
-                    ui::field("Finding", index + 1);
+                    tui::field("Finding", index + 1);
                 }
                 if finding.ioc != indicator {
                     field_or_not_provided("Matched indicator", Some(&finding.ioc));
@@ -52,28 +52,30 @@ pub(crate) fn display_lookup(provider: &str, indicator: &str, outcome: &LookupOu
         LookupOutcome::Invalid { explanation }
         | LookupOutcome::ApiError { explanation }
         | LookupOutcome::RequestError { explanation }
-        | LookupOutcome::Unsupported { explanation } => ui::field("Details", explanation),
+        | LookupOutcome::TimedOut { explanation }
+        | LookupOutcome::SkippedDeadline { explanation }
+        | LookupOutcome::Unsupported { explanation } => tui::field("Details", explanation),
         LookupOutcome::NotConfigured => {
-            ui::field(
+            tui::field(
                 "Details",
                 "ABUSECH_AUTH_KEY is not configured; no request was made.",
             );
         }
         LookupOutcome::SkippedDuplicate { references_hash } => {
-            ui::field(
+            tui::field(
                 "Details",
                 format!("Reuses earlier lookup for {references_hash}."),
             );
         }
         LookupOutcome::SkippedLookupLimit => {
-            ui::field(
+            tui::field(
                 "Details",
                 "No request was made because the automatic lookup limit was reached.",
             );
         }
     }
-    ui::divider();
-    ui::spacer();
+    tui::divider();
+    tui::spacer();
 }
 
 /// Render provider evidence without repeating the selected indicator value.
@@ -84,13 +86,34 @@ pub(crate) fn display_lookup_details(
     selected_indicator: &str,
     outcome: &LookupOutcome,
 ) {
-    ui::section(provider);
-    ui::status("Outcome", outcome.status(), status_kind(outcome));
-    ui::field("Meaning", ui::outcome_explanation(outcome));
+    display_lookup_details_inner(provider, selected_indicator, outcome, true);
+}
+
+/// Render provider details when the parent screen already explains the shared
+/// meaning of no-match and unavailable outcomes.
+pub(crate) fn display_value_lookup_details(
+    provider: &str,
+    selected_indicator: &str,
+    outcome: &LookupOutcome,
+) {
+    display_lookup_details_inner(provider, selected_indicator, outcome, false);
+}
+
+fn display_lookup_details_inner(
+    provider: &str,
+    selected_indicator: &str,
+    outcome: &LookupOutcome,
+    include_meaning: bool,
+) {
+    tui::section(provider);
+    tui::status("Outcome", outcome.status(), status_kind(outcome));
+    if include_meaning {
+        tui::field("Meaning", tui::outcome_explanation(outcome));
+    }
     match outcome {
         LookupOutcome::Found(details) => {
             if details.matched_sha256 != selected_indicator {
-                ui::field("Matched SHA-256", &details.matched_sha256);
+                tui::field("Matched SHA-256", &details.matched_sha256);
             }
             present_field("First seen", Some(&details.first_seen));
             present_field("File type", Some(&details.file_type));
@@ -99,14 +122,14 @@ pub(crate) fn display_lookup_details(
         }
         LookupOutcome::ThreatFoxFound { findings } => {
             if findings.is_empty() {
-                ui::field(
+                tui::field(
                     "Details",
                     "The stored result is marked FOUND but contains no IOC records.",
                 );
             }
             for (index, finding) in findings.iter().enumerate() {
                 if findings.len() > 1 {
-                    ui::field("Finding", index + 1);
+                    tui::field("Finding", index + 1);
                 }
                 if finding.ioc != selected_indicator {
                     field_or_not_provided("Matched indicator", Some(&finding.ioc));
@@ -137,35 +160,39 @@ pub(crate) fn display_lookup_details(
         LookupOutcome::Invalid { explanation }
         | LookupOutcome::ApiError { explanation }
         | LookupOutcome::RequestError { explanation }
-        | LookupOutcome::Unsupported { explanation } => ui::field("Details", explanation),
+        | LookupOutcome::TimedOut { explanation }
+        | LookupOutcome::SkippedDeadline { explanation }
+        | LookupOutcome::Unsupported { explanation } => tui::field("Details", explanation),
         LookupOutcome::NotConfigured => {
-            ui::field(
+            tui::field(
                 "Details",
                 "ABUSECH_AUTH_KEY is not configured; no request was made.",
             );
         }
         LookupOutcome::SkippedDuplicate { references_hash } => {
             if !references_hash.eq_ignore_ascii_case(selected_indicator) {
-                ui::field("Reuses lookup", references_hash);
+                tui::field("Reuses lookup", references_hash);
             } else {
-                ui::field("Details", "This value was already looked up once.");
+                tui::field("Details", "This value was already looked up once.");
             }
         }
         LookupOutcome::SkippedLookupLimit => {
-            ui::field(
+            tui::field(
                 "Details",
                 "No request was made because the lookup limit was reached.",
             );
         }
     }
     // Close each provider block so consecutive results remain visually distinct.
-    ui::divider();
-    ui::spacer();
+    if include_meaning {
+        tui::divider();
+    }
+    tui::spacer();
 }
 
 fn present_field(label: &str, value: Option<&str>) {
     if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
-        ui::field(label, value);
+        tui::field(label, value);
     }
 }
 
@@ -174,7 +201,7 @@ fn field_or_not_provided(label: &str, value: Option<&str>) {
         .map(str::trim)
         .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("Not provided"))
         .unwrap_or("Not provided");
-    ui::field(label, value);
+    tui::field(label, value);
 }
 
 fn display_tags(tags: &[String]) {
@@ -205,7 +232,7 @@ fn display_urlhaus_details(details: &crate::report::UrlhausLookupDetails) {
         } else {
             &record.url
         };
-        ui::field("Associated URL", format!("{}. {}", index + 1, url));
+        tui::field("Associated URL", format!("{}. {}", index + 1, url));
         field_or_not_provided("URL status", record.status.as_deref());
         field_or_not_provided("URLhaus reference", record.reference.as_deref());
         field_or_not_provided("Host", record.host.as_deref());
@@ -218,7 +245,7 @@ fn display_urlhaus_details(details: &crate::report::UrlhausLookupDetails) {
     if details.associated_urls.is_empty()
         && let Some(count) = details.associated_url_count
     {
-        ui::field("Associated URL records", count);
+        tui::field("Associated URL records", count);
     }
 }
 
@@ -230,8 +257,8 @@ fn display_malwarebazaar_match(details: &MatchDetails) {
     field_or_not_provided("Signature", details.signature.as_deref());
 }
 
-pub(crate) fn status_kind(outcome: &LookupOutcome) -> ui::Status {
-    ui::outcome_style(outcome)
+pub(crate) fn status_kind(outcome: &LookupOutcome) -> tui::Status {
+    tui::outcome_style(outcome)
 }
 
 // Display the malware data in the terminal.
@@ -239,20 +266,20 @@ pub(super) fn display_malware_data(
     data: &MalwareResponse,
     country: Option<&str>,
 ) -> Vec<Indicator> {
-    ui::header("MALWAREBAZAAR", "Recent malware sample intelligence");
+    tui::header("MALWAREBAZAAR", "Recent malware sample intelligence");
 
-    ui::section("FEED STATUS");
-    ui::field("Provider", "MalwareBazaar");
+    tui::section("FEED STATUS");
+    tui::field("Provider", "MalwareBazaar");
 
     if data.query_status == "ok" {
-        ui::status("STATUS", "ONLINE", ui::Status::Success);
-        ui::field("Results", format!("{} recent samples", data.data.len()));
+        tui::status("STATUS", "ONLINE", tui::Status::Success);
+        tui::field("Results", format!("{} recent samples", data.data.len()));
     } else {
-        ui::status("STATUS", "ERROR", ui::Status::Error);
-        ui::field("Results", "No samples returned");
+        tui::status("STATUS", "ERROR", tui::Status::Error);
+        tui::field("Results", "No samples returned");
     }
 
-    ui::section("RECENT SAMPLES");
+    tui::section("RECENT SAMPLES");
 
     // If a country was provided, only keep samples from that country.
     // Otherwise, keep all samples.
@@ -270,8 +297,8 @@ pub(super) fn display_malware_data(
 
     if samples.is_empty() {
         match country {
-            Some(country) => ui::box_line(&format!("  No malware samples found for {country}.")),
-            None => ui::box_line("  No malware samples were returned."),
+            Some(country) => tui::box_line(&format!("  No malware samples found for {country}.")),
+            None => tui::box_line("  No malware samples were returned."),
         }
     } else {
         // Go through each malware sample one at a time.
@@ -283,7 +310,6 @@ pub(super) fn display_malware_data(
         }
     }
 
-    ui::close_box();
     println!();
 
     indicators
@@ -297,26 +323,20 @@ fn display_sample(sample: &MalwareSample, number: usize) {
         .unwrap_or("")
         .to_uppercase();
 
-    // Convert the country code into a flag and readable country name.
-    let flag = ui::country_flag(&country_code);
     let country = country_name(&country_code);
-    let origin = if country_code.is_empty() {
-        format!("{flag} {country}")
-    } else {
-        format!("{flag} {country} ({country_code})")
-    };
+    let origin = tui::country_label(&country_code, country);
 
-    ui::section(&format!("MALWARE SAMPLE #{number}"));
-    ui::field("File", &sample.file_name);
-    ui::field("Type", &sample.file_type);
-    ui::field("Origin", origin);
-    ui::field("First seen", &sample.first_seen);
-    ui::field("SHA-256", &sample.sha256_hash);
-    ui::field(
+    tui::section(&format!("MALWARE SAMPLE #{number}"));
+    tui::field("File", &sample.file_name);
+    tui::field("Type", &sample.file_type);
+    tui::field("Origin", origin);
+    tui::field("First seen", &sample.first_seen);
+    tui::field("SHA-256", &sample.sha256_hash);
+    tui::field(
         "Signature",
         sample.signature.as_deref().unwrap_or("Unknown"),
     );
-    ui::box_line("");
+    tui::box_line("");
 }
 
 // Convert an ISO country code into a readable country name.
@@ -369,60 +389,60 @@ fn country_name(code: &str) -> &str {
 }
 
 pub(super) fn display_top_origins(data: &TopOrigins) {
-    ui::section("SOURCE COUNTRIES");
+    tui::section("SOURCE COUNTRIES");
 
     // Display each country returned by Cloudflare
     for country in &data.top_0 {
-        let flag = ui::country_flag(&country.origin_country_alpha2);
         let bar = percentage_bar(country.value);
 
-        ui::field(
+        tui::field(
             &format!("#{}", country.rank),
             format!(
-                "{flag} {} · {:.2}%",
-                country.origin_country_name, country.value
+                "{} · {:.2}%",
+                tui::country_label(&country.origin_country_alpha2, &country.origin_country_name),
+                country.value
             ),
         );
-        ui::box_line(&format!("      {bar}"));
+        tui::box_line(&format!("      {bar}"));
     }
 }
 
 pub(super) fn display_top_targets(data: &TopTargets) {
-    ui::section("TARGET COUNTRIES");
+    tui::section("TARGET COUNTRIES");
 
     // Display each target country returned by Cloudflare
     for country in &data.top_0 {
-        let flag = ui::country_flag(&country.target_country_alpha2);
         let bar = percentage_bar(country.value);
 
-        ui::field(
+        tui::field(
             &format!("#{}", country.rank),
             format!(
-                "{flag} {} · {:.2}%",
-                country.target_country_name, country.value
+                "{} · {:.2}%",
+                tui::country_label(&country.target_country_alpha2, &country.target_country_name),
+                country.value
             ),
         );
-        ui::box_line(&format!("      {bar}"));
+        tui::box_line(&format!("      {bar}"));
     }
 }
 
 pub(super) fn display_top_attack_pairs(data: &TopAttackPairs) {
-    ui::section("ORIGIN → TARGET ATTACK PAIRS");
+    tui::section("ORIGIN → TARGET ATTACK PAIRS");
 
     // Display where the attacks are coming from and where they are going
     for pair in &data.top_0 {
-        let origin_flag = ui::country_flag(&pair.origin_country_alpha2);
-        let target_flag = ui::country_flag(&pair.target_country_alpha2);
         let bar = percentage_bar(pair.value);
 
-        ui::field(
+        tui::field(
             &format!("#{}", pair.rank),
             format!(
-                "{origin_flag} {} → {target_flag} {} · {:.2}%",
-                pair.origin_country_name, pair.target_country_name, pair.value
+                "{} → {} · {:.2}%",
+                tui::country_label(&pair.origin_country_alpha2, &pair.origin_country_name),
+                tui::country_label(&pair.target_country_alpha2, &pair.target_country_name),
+                pair.value
             ),
         );
-        ui::box_line(&format!("      {bar}"));
+        tui::box_line(&format!("      {bar}"));
     }
 }
 
@@ -438,9 +458,36 @@ fn percentage_bar(value: f64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_lookup, display_lookup_details, status_kind};
+    use super::{display_lookup, display_lookup_details, display_top_origins, status_kind};
+    use crate::providers::cloudflare::{OriginCountry, TopOrigins};
     use crate::report::LookupOutcome;
-    use crate::ui::Status;
+    use crate::tui::Status;
+
+    #[test]
+    fn cloudflare_country_rows_keep_flag_and_text_fallback_together() {
+        crate::tui::reset_screen();
+        display_top_origins(&TopOrigins {
+            top_0: vec![
+                OriginCountry {
+                    origin_country_alpha2: "NP".into(),
+                    origin_country_name: "Nepal".into(),
+                    value: 12.5,
+                    rank: 1,
+                },
+                OriginCountry {
+                    origin_country_alpha2: "ZZ".into(),
+                    origin_country_name: "Unknown region".into(),
+                    value: 2.0,
+                    rank: 2,
+                },
+            ],
+        });
+        let rows = crate::tui::test_rendered_lines(120, 30);
+        let output = rows.join("\n");
+        assert!(output.contains("🇳🇵"));
+        assert!(output.contains("Nepal (NP)"));
+        assert!(output.contains("Unknown region (ZZ)"), "{output}");
+    }
 
     #[test]
     fn provider_status_colors_preserve_result_meaning() {
@@ -487,9 +534,9 @@ mod tests {
                 explanation: "SHA-1 is not supported".into(),
             },
         ] {
-            crate::ui::reset_screen();
+            crate::tui::reset_screen();
             display_lookup_details("URLhaus", "example", &outcome);
-            let lines = crate::ui::recorded_line_texts();
+            let lines = crate::tui::test_rendered_lines(160, 512);
             assert_eq!(
                 lines.iter().filter(|line| line.contains("Meaning")).count(),
                 1,
@@ -508,7 +555,7 @@ mod tests {
 
     #[test]
     fn provider_details_are_separated_and_keep_status_and_evidence() {
-        crate::ui::reset_screen();
+        crate::tui::reset_screen();
         display_lookup_details(
             "MalwareBazaar",
             "selected",
@@ -523,7 +570,7 @@ mod tests {
         display_lookup_details("ThreatFox", "selected", &LookupOutcome::NotFound);
         display_lookup_details("URLhaus", "selected", &LookupOutcome::NotFound);
 
-        let lines = crate::ui::recorded_rendered_lines(80);
+        let lines = crate::tui::test_rendered_lines(80, 512);
         let malware = lines
             .iter()
             .position(|line| line.contains("MalwareBazaar"))
@@ -540,18 +587,16 @@ mod tests {
         assert!(threatfox < urlhaus);
         for (start, end) in [(malware, threatfox), (threatfox, urlhaus)] {
             assert!(
-                lines[start + 1..end].iter().any(|line| {
-                    line.strip_prefix('║')
-                        .and_then(|interior| interior.strip_suffix('║'))
-                        .is_some_and(|interior| interior.chars().all(char::is_whitespace))
-                }),
-                "provider sections must have a blank framed row between them"
+                lines[start + 1..end].iter().any(|line| line
+                    .chars()
+                    .all(|character| character.is_whitespace() || character == '│')),
+                "provider sections must have a blank row between them"
             );
         }
         assert!(
             lines
                 .iter()
-                .all(|line| crate::ui::visible_width(line) <= 80)
+                .all(|line| crate::tui::visible_width(line) <= 80)
         );
         assert!(lines.iter().any(|line| line.contains("FOUND")));
         assert!(lines.iter().any(|line| line.contains("NOT FOUND")));
@@ -570,17 +615,32 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("Signature") && line.contains("Not provided"))
         );
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("does not prove the item"))
-        );
+        assert!(lines.iter().any(|line| line.contains("does not establish")));
         assert!(lines.iter().any(|line| line.contains("is safe.")));
     }
 
     #[test]
+    fn not_found_status_and_queried_indicator_render_on_separate_lines() {
+        crate::tui::reset_screen();
+        display_lookup("URLhaus", "example.test", &LookupOutcome::NotFound);
+        let lines = crate::tui::test_rendered_lines(80, 32);
+        let status_line = lines
+            .iter()
+            .find(|line| line.contains("URLhaus") && line.contains("NOT FOUND"))
+            .expect("provider status is visible");
+        let indicator_line = lines
+            .iter()
+            .find(|line| line.contains("Indicator") && line.contains("example.test"))
+            .expect("queried indicator is visible");
+        assert!(!status_line.contains("example.test"));
+        assert!(!indicator_line.contains("NOT FOUND"));
+        assert!(lines.iter().any(|line| line.contains("does not establish")));
+        assert!(lines.iter().any(|line| line.contains("safe.")));
+    }
+
+    #[test]
     fn value_search_provider_results_have_framed_spacing() {
-        crate::ui::reset_screen();
+        crate::tui::reset_screen();
         display_lookup(
             "MalwareBazaar",
             "selected",
@@ -595,7 +655,7 @@ mod tests {
         display_lookup("ThreatFox", "selected", &LookupOutcome::NotFound);
         display_lookup("URLhaus", "selected", &LookupOutcome::NotFound);
 
-        let lines = crate::ui::recorded_rendered_lines(80);
+        let lines = crate::tui::test_rendered_lines(80, 512);
         let malware = lines
             .iter()
             .position(|line| line.contains("MalwareBazaar") && line.contains("FOUND"))
@@ -611,30 +671,24 @@ mod tests {
 
         for (start, end) in [(malware, threatfox), (threatfox, urlhaus)] {
             assert!(
-                lines[start + 1..end].iter().any(|line| {
-                    line.strip_prefix('║')
-                        .and_then(|interior| interior.strip_suffix('║'))
-                        .is_some_and(|interior| interior.chars().all(char::is_whitespace))
-                }),
-                "Value Search results must have an empty framed row between providers"
+                lines[start + 1..end].iter().any(|line| line
+                    .chars()
+                    .all(|character| character.is_whitespace() || character == '│')),
+                "Value Search results must have an empty row between providers"
             );
         }
         assert!(
             lines
                 .iter()
-                .all(|line| crate::ui::visible_width(line) <= 80)
+                .all(|line| crate::tui::visible_width(line) <= 80)
         );
         assert!(lines.iter().any(|line| line.contains("Matched SHA-256")));
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("does not prove the item"))
-        );
+        assert!(lines.iter().any(|line| line.contains("does not establish")));
     }
 
     #[test]
     fn value_search_groups_multiple_threatfox_findings_and_normalizes_missing_fields() {
-        crate::ui::reset_screen();
+        crate::tui::reset_screen();
         let finding = crate::report::ThreatFoxFinding {
             source_record_id: None,
             ioc: "selected.example".into(),
@@ -662,26 +716,42 @@ mod tests {
             },
         );
 
-        let lines = crate::ui::recorded_line_texts();
-        assert!(lines.iter().any(|line| line == "Finding: 1"));
-        assert!(lines.iter().any(|line| line == "Finding: 2"));
+        let lines = crate::tui::test_rendered_lines(160, 512);
         assert!(
             lines
                 .iter()
-                .any(|line| line == "Matched indicator: other.example")
+                .any(|line| line.contains("Finding") && line.contains('1'))
         );
-        assert!(lines.iter().any(|line| line == "Type info: Not provided"));
-        assert!(lines.iter().any(|line| line == "Tags: Not provided"));
         assert!(
             lines
                 .iter()
-                .any(|line| line == "Malware name: Different family")
+                .any(|line| line.contains("Finding") && line.contains('2'))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Matched indicator") && line.contains("other.example"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Type info") && line.contains("Not provided"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Tags") && line.contains("Not provided"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Malware name") && line.contains("Different family"))
         );
         assert!(!lines.iter().any(|line| line.ends_with(": ")));
         assert_eq!(
             lines
                 .iter()
-                .filter(|line| line.as_str() == "Indicator: selected.example")
+                .filter(|line| line.contains("Indicator") && line.contains("selected.example"))
                 .count(),
             1,
             "the selected IOC should not be repeated for a matching finding"
@@ -690,14 +760,14 @@ mod tests {
 
     #[test]
     fn value_search_explains_empty_threatfox_match_data() {
-        crate::ui::reset_screen();
+        crate::tui::reset_screen();
         display_lookup(
             "ThreatFox",
             "selected.example",
             &LookupOutcome::ThreatFoxFound { findings: vec![] },
         );
 
-        let lines = crate::ui::recorded_line_texts();
+        let lines = crate::tui::test_rendered_lines(160, 512);
         assert!(lines.iter().any(|line| line.contains("FOUND")));
         assert!(
             lines
@@ -708,7 +778,7 @@ mod tests {
 
     #[test]
     fn missing_and_empty_metadata_render_once_as_not_provided() {
-        crate::ui::reset_screen();
+        crate::tui::reset_screen();
         let threatfox = crate::report::ThreatFoxFinding {
             source_record_id: None,
             ioc: "indicator.example".into(),
@@ -761,10 +831,22 @@ mod tests {
             &LookupOutcome::UrlhausFound { details: urlhaus },
         );
 
-        let lines = crate::ui::recorded_line_texts();
-        assert!(lines.iter().any(|line| line == "Date added: 2026-01-02"));
-        assert!(lines.iter().any(|line| line == "First seen: 2026-01-03"));
-        assert!(lines.iter().any(|line| line == "Last seen: 2026-01-04"));
+        let lines = crate::tui::test_rendered_lines(160, 512);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Date added") && line.contains("2026-01-02"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("First seen") && line.contains("2026-01-03"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Last seen") && line.contains("2026-01-04"))
+        );
         for label in [
             "Type info",
             "Threat type",

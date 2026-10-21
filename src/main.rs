@@ -7,7 +7,7 @@ mod investigation;
 mod log_hunt;
 mod providers;
 mod report;
-mod ui;
+mod tui;
 
 use dotenvy::dotenv;
 use reqwest::blocking::Client;

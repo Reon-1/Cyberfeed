@@ -1,8 +1,9 @@
 use super::{
     IndicatorEntry, LiveProgress, OutcomeCounts, Selection, TABLE_PROVIDER_WIDTH,
     extracted_outcome_counts, fit_indicator, fit_text, indicator_entries, indicator_line_count,
-    is_positive_match, matched_indicator_count, overview_layout, overview_value, page_capacity,
-    page_count, page_for_indicator, parse_selection, provider_summary, table_widths,
+    is_positive_match, matched_indicator_count, matched_type_counts, overview_layout,
+    overview_value, page_capacity, page_count, page_for_indicator, parse_selection,
+    provider_summary, table_widths,
 };
 use crate::indicator::IndicatorType;
 use crate::report::{LookupOutcome, LookupSubject, MatchDetails, ProviderLookup, ThreatFoxFinding};
@@ -88,6 +89,49 @@ fn provider_summary_counts_each_recorded_outcome_once_by_category() {
         counts.summary(),
         "FOUND 3 · NOT FOUND 1 · ERROR 2 · INVALID 1 · UNSUPPORTED 1 · NOT CONFIGURED 1 · SKIPPED DUPLICATE 1 · SKIPPED LIMIT 1"
     );
+}
+
+#[test]
+fn positive_findings_are_summarized_by_indicator_type_without_counting_no_match_or_error() {
+    let lookups = [
+        record(LookupOutcome::NotFound),
+        record(LookupOutcome::Found(MatchDetails {
+            matched_sha256: "file-hash".into(),
+            first_seen: "today".into(),
+            file_type: "PE32".into(),
+            sample_filename: None,
+            signature: None,
+        })),
+        record(LookupOutcome::ApiError {
+            explanation: "unavailable".into(),
+        }),
+        record(LookupOutcome::ThreatFoxFound { findings: vec![] }),
+    ];
+    let hash = "a".repeat(32);
+    let entries = [
+        IndicatorEntry {
+            value: &hash,
+            indicator_type: IndicatorType::Hash,
+            lookups: vec![&lookups[0]],
+        },
+        IndicatorEntry {
+            value: "192.0.2.1",
+            indicator_type: IndicatorType::IP,
+            lookups: vec![&lookups[1]],
+        },
+        IndicatorEntry {
+            value: "example.test",
+            indicator_type: IndicatorType::Domain,
+            lookups: vec![&lookups[2]],
+        },
+        IndicatorEntry {
+            value: "https://example.test/path",
+            indicator_type: IndicatorType::Url,
+            lookups: vec![&lookups[3]],
+        },
+    ];
+
+    assert_eq!(matched_type_counts(&entries), [0, 1, 0, 1]);
 }
 
 #[test]

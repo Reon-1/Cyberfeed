@@ -3,7 +3,7 @@ use crate::indicator::{Indicator, IndicatorType};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 pub const SESSION_REPORT_TYPE: &str = "SESSION";
 /// Saved JSON reports are bounded to this size when written and reopened.
 pub const MAX_SAVED_REPORT_BYTES: u64 = 32 * 1024 * 1024;
@@ -117,7 +117,7 @@ pub struct ReportSummary {
     /// Aggregate status across recorded original-file provider outcomes.
     pub original_file_lookup_status: Option<String>,
     pub extracted_indicator_counts: IndicatorCounts,
-    /// Counts provider outcomes for extracted SHA-256 values, not unique hashes.
+    /// Counts provider outcomes for extracted hashes only (MD5, SHA-1, and SHA-256).
     pub extracted_hash_lookup_counts: LookupCounts,
     pub extraction_limit_reached: bool,
 }
@@ -159,6 +159,8 @@ pub enum LookupOutcome {
     NotConfigured,
     SkippedDuplicate { references_hash: String },
     SkippedLookupLimit,
+    TimedOut { explanation: String },
+    SkippedDeadline { explanation: String },
     ThreatFoxFound { findings: Vec<ThreatFoxFinding> },
     UrlhausFound { details: UrlhausLookupDetails },
     Unsupported { explanation: String },
@@ -314,10 +316,12 @@ fn derive_summary(
             LookupOutcome::NotFound => lookup_counts.not_found += 1,
             LookupOutcome::Invalid { .. }
             | LookupOutcome::ApiError { .. }
-            | LookupOutcome::RequestError { .. } => lookup_counts.failures += 1,
+            | LookupOutcome::RequestError { .. }
+            | LookupOutcome::TimedOut { .. } => lookup_counts.failures += 1,
             LookupOutcome::NotConfigured
             | LookupOutcome::SkippedDuplicate { .. }
             | LookupOutcome::SkippedLookupLimit
+            | LookupOutcome::SkippedDeadline { .. }
             | LookupOutcome::Unsupported { .. } => lookup_counts.skipped_or_unavailable += 1,
             LookupOutcome::ThreatFoxFound { .. } | LookupOutcome::UrlhausFound { .. } => {
                 lookup_counts.found += 1
@@ -343,6 +347,8 @@ impl LookupOutcome {
             Self::NotConfigured => "NOT CONFIGURED",
             Self::SkippedDuplicate { .. } => "SKIPPED: DUPLICATE",
             Self::SkippedLookupLimit => "SKIPPED: LOOKUP LIMIT",
+            Self::TimedOut { .. } => "TIMED OUT",
+            Self::SkippedDeadline { .. } => "SKIPPED: DEADLINE",
             Self::ThreatFoxFound { .. } => "FOUND",
             Self::UrlhausFound { .. } => "FOUND",
             Self::Unsupported { .. } => "UNSUPPORTED",
