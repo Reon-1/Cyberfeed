@@ -950,11 +950,26 @@ mod tests {
 
     #[test]
     fn urlhaus_allocation_is_fair_for_the_bundled_new_test_report() {
-        let report: InvestigationReport = serde_json::from_str(include_str!(
-            "../../reports/cyberfeed-new_test-1792600506.json"
-        ))
-        .unwrap();
-        let indicators = &report.local_inspection.indicators;
+        let file_hash = "f".repeat(64);
+        let indicators = vec![
+            Indicator::new("a".repeat(32), IndicatorType::Hash),
+            Indicator::new("b".repeat(32), IndicatorType::Hash),
+            Indicator::new("c".repeat(32), IndicatorType::Hash),
+            Indicator::new("1".repeat(64), IndicatorType::Hash),
+            Indicator::new("2".repeat(64), IndicatorType::Hash),
+            Indicator::new("3".repeat(64), IndicatorType::Hash),
+            Indicator::new("192.0.2.1", IndicatorType::IP),
+            Indicator::new("192.0.2.2", IndicatorType::IP),
+            Indicator::new("192.0.2.3", IndicatorType::IP),
+            Indicator::new("192.0.2.4", IndicatorType::IP),
+            Indicator::new("192.0.2.5", IndicatorType::IP),
+            Indicator::new("alpha.example", IndicatorType::Domain),
+            Indicator::new("bravo.example", IndicatorType::Domain),
+            Indicator::new("charlie.example", IndicatorType::Domain),
+            Indicator::new("delta.example", IndicatorType::Domain),
+            Indicator::new("echo.example", IndicatorType::Domain),
+            Indicator::new("foxtrot.example", IndicatorType::Domain),
+        ];
         let counts = indicators
             .iter()
             .fold([0usize; 4], |mut counts, indicator| {
@@ -968,7 +983,7 @@ mod tests {
             });
         assert_eq!(counts, [6, 5, 6, 0]);
 
-        let allocated = allocate_urlhaus_requests(indicators, &report.file.sha256);
+        let allocated = allocate_urlhaus_requests(&indicators, &file_hash);
         assert_eq!(allocated.len(), 10);
         assert_eq!(
             allocated
@@ -1010,7 +1025,7 @@ mod tests {
         );
 
         let reversed = indicators.iter().rev().cloned().collect::<Vec<_>>();
-        let reverse_allocation = allocate_urlhaus_requests(&reversed, &report.file.sha256);
+        let reverse_allocation = allocate_urlhaus_requests(&reversed, &file_hash);
         assert_eq!(reverse_allocation.len(), 10);
         assert_eq!(
             reverse_allocation
@@ -1026,7 +1041,7 @@ mod tests {
             3
         );
         assert_eq!(
-            allocate_urlhaus_requests(indicators, &report.file.sha256),
+            allocate_urlhaus_requests(&indicators, &file_hash),
             allocated,
             "allocation must be deterministic for the same input order"
         );
