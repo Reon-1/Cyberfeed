@@ -14,6 +14,9 @@ use ratatui::text::{Line, Span};
 use std::cell::RefCell;
 use std::fmt::Display;
 
+#[cfg(test)]
+use std::cell::Cell;
+
 pub(crate) use terminal::TerminalSession;
 pub use theme::Status;
 
@@ -27,6 +30,8 @@ struct Screen {
 
 thread_local! {
     static SCREEN: RefCell<Screen> = RefCell::new(Screen::default());
+    #[cfg(test)]
+    static TEST_TERMINAL_DIMENSIONS: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
 }
 
 fn add_line(line: Line<'static>) {
@@ -327,9 +332,34 @@ pub(crate) fn clear_terminal() {
 }
 
 pub fn terminal_dimensions() -> (usize, usize) {
+    #[cfg(test)]
+    if let Some(dimensions) = TEST_TERMINAL_DIMENSIONS.with(Cell::get) {
+        return dimensions;
+    }
+
     crossterm::terminal::size()
         .map(|(columns, rows)| (usize::from(columns), usize::from(rows)))
         .unwrap_or((INNER_WIDTH + 2, 24))
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_terminal_dimensions<T>(
+    columns: usize,
+    rows: usize,
+    render: impl FnOnce() -> T,
+) -> T {
+    struct RestoreDimensions(Option<(usize, usize)>);
+
+    impl Drop for RestoreDimensions {
+        fn drop(&mut self) {
+            TEST_TERMINAL_DIMENSIONS.with(|dimensions| dimensions.set(self.0));
+        }
+    }
+
+    let previous =
+        TEST_TERMINAL_DIMENSIONS.with(|dimensions| dimensions.replace(Some((columns, rows))));
+    let _restore = RestoreDimensions(previous);
+    render()
 }
 
 pub fn content_width() -> usize {
