@@ -865,10 +865,11 @@ mod tests {
         crate::tui::reset_screen();
         comparison_screen_at_height(&older, &newer, 24);
         let rendered = crate::tui::test_rendered_lines_for_rows(80, 23).join("\n");
+        let rendered_without_line_breaks = rendered.lines().collect::<Vec<_>>().join(" ");
         assert!(rendered.contains("Different file contents"));
         assert!(rendered.contains("SHA-256 hashes differ"));
         assert!(rendered.contains("Timestamps do not"));
-        assert!(rendered.contains("establish that one is a later version."));
+        assert!(rendered_without_line_breaks.contains("establish that one is a later version."));
         assert!(rendered.contains("Return to Saved Reports"));
         assert!(!rendered.contains("Indicators: 0 added"));
     }
