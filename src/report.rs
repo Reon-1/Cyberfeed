@@ -42,15 +42,26 @@ mod tests {
             size: 1,
             sha256: "x".into(),
         };
-        let r = InvestigationReport::new(
+        let mut r = InvestigationReport::new(
             &f,
             vec![Indicator::new("x|y\n`", IndicatorType::Domain)],
             Some(false),
             vec![],
         );
+        r.local_inspection
+            .source_occurrences
+            .push(SourceOccurrence {
+                source_filename: "app.log".into(),
+                line_number: 7,
+                indicator: Indicator::new("example.test", IndicatorType::Domain),
+                original_value: "example.test".into(),
+                context: "user=alice token=synthetic".into(),
+            });
         let md = r.to_markdown();
         assert!(!md.contains("evil|`\n"));
         assert!(md.contains("x\\|y"));
+        assert!(md.contains("may contain sensitive filenames"));
+        assert!(md.contains("user=alice token=synthetic"));
     }
     #[test]
     fn saves_both_files_without_overwrite() {

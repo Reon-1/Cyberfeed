@@ -329,7 +329,7 @@ fn configure_providers(editor: &mut InputEditor, config: &Config) {
 }
 
 fn batch_triage(editor: &mut InputEditor) {
-    use crate::file::inspect_file;
+    use crate::file::inspect_file_with_deadline;
     use crate::report::InvestigationReport;
     use std::{
         fs,
@@ -344,7 +344,7 @@ fn batch_triage(editor: &mut InputEditor) {
         "Enter semicolon-separated file paths or one directory. Directories are scanned one level only.",
     );
     tui::note(
-        "Maximum 100 files; extracted indicators are capped at 10,000 per file by the inspection pipeline.",
+        "Maximum 100 files and 60 seconds total inspection time; completed files are fully hashed before reports are saved.",
     );
     tui::navigation_footer("0", "Cancel");
     let Some(input) = terminal::read_input(editor, "  Paths: ", true) else {
@@ -389,8 +389,16 @@ fn batch_triage(editor: &mut InputEditor) {
     }
     let mut processed = 0usize;
     let mut saved = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     for path in paths {
-        match inspect_file(&path) {
+        if std::time::Instant::now() >= deadline {
+            errors.push(format!(
+                "{}: skipped because the 60-second batch inspection budget expired; no report was saved.",
+                path.display()
+            ));
+            continue;
+        }
+        match inspect_file_with_deadline(&path, deadline) {
             Ok(inspection) => {
                 processed += 1;
                 let indicators = inspection
@@ -499,7 +507,7 @@ fn log_hunt(editor: &mut InputEditor) {
                 tui::field("Context", &occurrence.context);
             }
             tui::warning(
-                "Observed log values are leads, not provider findings or proof of malicious activity.",
+                "This report stores log filenames, line numbers, indicators, and context that may contain secrets or internal data. Review it before sharing; observed values are leads, not verdicts.",
             );
             match crate::report::save_report(&report, Path::new("reports")) {
                 Ok((json, markdown)) => {

@@ -45,7 +45,7 @@ pub fn stix_indicator_count(report: &InvestigationReport) -> usize {
         .count()
 }
 
-fn stix_indicator(indicator: &Indicator, timestamp: u64, report_sha256: &str) -> Option<Value> {
+fn stix_indicator(indicator: &Indicator, timestamp: u64, artifact_sha256: &str) -> Option<Value> {
     if crate::indicator::classify(&indicator.value, crate::indicator::MANUAL_HASH_LENGTHS)
         != Some(indicator.indicator_type)
     {
@@ -87,7 +87,7 @@ fn stix_indicator(indicator: &Indicator, timestamp: u64, report_sha256: &str) ->
     };
     let timestamp = format_timestamp(timestamp);
     Some(
-        json!({"type":"indicator", "spec_version":"2.1", "id":format!("indicator--{}", Uuid::new_v4()), "created":timestamp, "modified":timestamp, "name":format!("CyberFeed observed {kind} indicator"), "description":"Indicator extracted locally from an investigated artifact. This is not a verdict about that artifact.", "indicator_types":["unknown"], "pattern":pattern, "pattern_type":"stix", "valid_from":timestamp, "external_references":[{"source_name":"CyberFeed local investigation", "external_id":report_sha256, "description":"Source report SHA-256 identifier; this indicator is an observation, not a file verdict."}]}),
+        json!({"type":"indicator", "spec_version":"2.1", "id":format!("indicator--{}", Uuid::new_v4()), "created":timestamp, "modified":timestamp, "name":format!("CyberFeed observed {kind} indicator"), "description":"Indicator extracted locally from an investigated artifact. This is not a verdict about that artifact.", "indicator_types":["unknown"], "pattern":pattern, "pattern_type":"stix", "valid_from":timestamp, "external_references":[{"source_name":"CyberFeed local investigation", "external_id":artifact_sha256, "description":"SHA-256 of the investigated artifact; this identifies the artifact, not this report. The indicator is an observation, not a file verdict."}]}),
     )
 }
 
@@ -285,7 +285,7 @@ mod tests {
         let file = FileInfo {
             name: "x".into(),
             size: 0,
-            sha256: "report-sha".into(),
+            sha256: "d".repeat(64),
         };
         let mut report = InvestigationReport::new(
             &file,
@@ -330,7 +330,13 @@ mod tests {
         assert_eq!(objects[6]["indicator_types"][0], "unknown");
         assert_eq!(
             objects[0]["external_references"][0]["external_id"],
-            "report-sha"
+            report.file.sha256
+        );
+        assert!(
+            objects[0]["external_references"][0]["description"]
+                .as_str()
+                .unwrap()
+                .contains("not this report")
         );
         assert_eq!(objects[0]["created"], "2023-11-14T22:13:20Z");
         let bundle_uuid = bundle["id"]

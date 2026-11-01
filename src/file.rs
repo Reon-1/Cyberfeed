@@ -158,6 +158,7 @@ fn decode_file_uri(input: &str) -> Option<PathBuf> {
     Some(PathBuf::from(path))
 }
 
+#[cfg(test)]
 pub fn inspect_file(path: &Path) -> Result<FileInspection, String> {
     inspect_file_until(path, None)
 }

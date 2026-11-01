@@ -24,7 +24,7 @@ Keep modules focused and errors explicit. Do not introduce an async runtime, dat
 - Preserve distinctions between `FOUND`, `NOT FOUND`, `ERROR`, `INVALID`, `UNSUPPORTED`, `NOT CONFIGURED`, and `SKIPPED`. A provider failure is never a negative result.
 - A provider match applies to the queried indicator; it is not by itself a verdict on a local file. Preserve source, queried value, timestamps, and available metadata.
 - MalwareBazaar, ThreatFox, and URLhaus support different indicator types. URLhaus exact-URL checks preserve full URL paths and queries; URLhaus does not support SHA-1 payload lookup. Cloudflare Radar is a feed, not an IOC lookup provider.
-- Batch file checks and log hunting are local-only. Log occurrence provenance is optional for older reports and must deserialize with its default.
+- Batch file checks and log hunting are local-only. Batch inspection is capped at 100 files and one 60-second overall deadline; deadline checks happen between blocking reads, which the OS cannot interrupt. A timed-out file must not produce a partial hash or report. Log occurrence provenance is optional for older reports and must deserialize with its default; report warnings should say that saved log context may contain sensitive data.
 - Preserve supported legacy file reports and the distinction between file and session reports. Paired report writes must retain atomic-write/error guarantees. Do not silently replace historical evidence.
 - Bound file, log, provider-response, and saved-report reads. File inspection and its sequential provider lookups share a 60-second analysis budget, with each provider request capped at 15 seconds. Keep these limits explicit and test changes to them; blocking OS file reads cannot be interrupted mid-call.
 - Indicator-list import is bounded to 8 MiB per source, 4,096 bytes per line, 100,000 candidates per import, and 1,000 URLs. Preserve the accepted prefix and disclose when a limit truncates input; do not treat list preview as provider coverage.
@@ -33,7 +33,7 @@ Keep modules focused and errors explicit. Do not introduce an async runtime, dat
 
 ## Tests and verification
 
-Use deterministic tests with temporary files and dummy credentials; never call live providers in automated tests. Prefer focused unit tests beside private implementation and Ratatui `TestBackend` checks for visible UI behavior. Add regression tests for confirmed defects and retain legacy report compatibility coverage.
+Use deterministic tests with temporary files, synthetic indicators, dummy credentials, and loopback HTTP mocks; never call live providers in automated tests. Prefer focused unit tests beside private implementation and Ratatui `TestBackend` checks for visible UI behavior. Add regression tests for confirmed defects and retain legacy report compatibility coverage.
 
 For normal changes, run:
 

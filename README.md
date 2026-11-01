@@ -11,7 +11,7 @@ It helps you collect and review evidence. It is not antivirus software and does 
 - **Compare indicator lists:** in **Current Session**, add two or more line-oriented text files for a local overlap preview, then pivot a selected value into Value Search. Use one indicator per line; blank lines and lines beginning with `#` are ignored. Each file is limited to 8 MiB, lines to 4,096 bytes, the import to 100,000 candidates, and URLs to 1,000. The preview retains source lines while open; it does not upload files.
 - **Search a log:** extract indicators from local UTF-8 text or JSONL while preserving line and context provenance. Log hunting is local-only.
 - **Save and revisit evidence:** store file and session investigations as JSON/Markdown pairs, browse them offline, compare reports, and export eligible indicators as STIX 2.1.
-- **Use local tools:** try the offline demo, inspect setup, or batch-check up to 100 files without provider lookups.
+- **Use local tools:** try the offline demo, inspect setup, or batch-check up to 100 files without provider lookups. Batch inspection stops at a shared 60-second deadline; a timed-out file gets no partial hash or report.
 - **Browse public feeds:** view MalwareBazaar samples and Cloudflare Radar attack trends. Cloudflare country rows show a flag when the ISO code is recognized, with the country name and code retained as text.
 
 Provider results describe the queried value, not necessarily the file it came from. `NOT FOUND` means that source returned no record at lookup time; it does not establish safety. Errors, unsupported checks, missing credentials, and skipped requests remain distinct from a no-match.
@@ -49,11 +49,13 @@ CyberFeed routes only supported indicator types to each provider. URLhaus checks
 4. Choose **Search Logs** and enter a local text or JSONL path. The scan is bounded to 64 MiB total, 16 KiB per line, 1,000 unique indicators, and 10,000 occurrences. Results include source line and context; they do not trigger provider requests.
 5. Open **Saved Reports** to review file and session reports offline. File comparison requires matching file identity to compare the same contents; missing or failed provider coverage is inconclusive. A saved report can export eligible indicators as STIX 2.1.
 
-File investigation performs local extraction before bounded provider lookups. The inspection and sequential provider checks share a 60-second analysis budget; each provider request is also capped at 15 seconds. If the budget expires, completed evidence is retained and unfinished checks are marked as timed out or skipped. Cloudflare Radar displays a request-in-progress state and each complete endpoint response when available; the endpoint does not stream individual rows.
+File investigation performs local extraction before bounded provider lookups. The inspection and sequential provider checks share a 60-second analysis budget; each provider request is also capped at 15 seconds. If the budget expires, completed evidence is retained and unfinished checks are marked as timed out or skipped. Authenticated requests do not follow redirects. Cloudflare Radar displays a request-in-progress state and each complete endpoint response when available; the endpoint does not stream individual rows.
 
 ## Reports and privacy
 
-Reports are written under `reports/` in the current working directory. File reports and session reports remain separate: a file report records one file investigation, while a session report collects completed file and individual-value checks. Reports can contain sensitive paths, hashes, and indicators, so protect the directory. Report loading is bounded and reports are read locally; malformed or unsupported files are surfaced as unavailable rather than treated as findings.
+Reports are written under `reports/` in the current working directory. File reports and session reports remain separate: a file report records one file investigation, while a session report collects completed file and individual-value checks. Log-hunt reports also store source filenames, line numbers, indicators, and up to 240 characters of context per occurrence. Reports can expose secrets, usernames, internal addresses, filenames, hashes, and provider metadata; review them before sharing and protect the directory. Report loading is bounded and reports are read locally; malformed or unsupported files are surfaced as unavailable rather than treated as findings.
+
+Local inspection sends no file contents. A provider lookup sends its supported queried indicator and required authentication header; the provider also receives ordinary connection metadata. Feed requests send no local indicators. `FOUND` means a record matched, `NOT FOUND` means no record was returned at lookup time, and `ERROR`, `INVALID`, `UNSUPPORTED`, `NOT CONFIGURED`, and `SKIPPED` explain different unsuccessful or unattempted checks. None of these results proves a file is safe.
 
 ## Project map
 
