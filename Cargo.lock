@@ -8,12 +8,15 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "dotenvy",
+ "libc",
  "ratatui",
  "reqwest",
  "rustyline",
  "serde",
  "serde_json",
  "sha2",
+ "unicode-segmentation",
+ "unicode-width",
  "uuid",
 ]
 

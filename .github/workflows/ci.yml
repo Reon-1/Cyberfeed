@@ -24,8 +24,16 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
       - name: Check all targets
-        run: cargo check --all-targets
+        run: cargo check --all-targets --locked
       - name: Run tests
-        run: cargo test
+        run: cargo test --locked
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+  msrv:
+    name: Minimum supported Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - run: cargo check --locked --all-targets

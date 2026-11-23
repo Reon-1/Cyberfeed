@@ -2,15 +2,92 @@
 pub struct Config {
     pub cloudflare_token: Option<String>,
     pub abusech_auth_key: Option<String>,
+    environment_keys: [bool; 2],
+    pub(crate) dotenv_error: bool,
 }
 
 impl Config {
-    pub fn from_lookup(mut lookup: impl FnMut(&str) -> Option<String>) -> Self {
+    pub fn load(
+        path: &std::path::Path,
+        mut environment: impl FnMut(&str) -> Option<String>,
+    ) -> Self {
+        let (file_values, dotenv_error) = match read_dotenv(path) {
+            Ok(values) => (values, false),
+            Err(_) => (Default::default(), true),
+        };
+        let external = [environment(ABUSECH_KEY), environment(CLOUDFLARE_KEY)];
+        let mut config = Self::from_lookup(|key| {
+            let index = usize::from(key == CLOUDFLARE_KEY);
+            external[index]
+                .clone()
+                .or_else(|| file_values.get(key).cloned())
+        });
+        config.environment_keys = external.map(|value| value.is_some());
+        config.dotenv_error = dotenv_error;
+        config
+    }
+
+    pub(crate) fn key_is_set_in_environment(&self, key: &str) -> bool {
+        self.environment_keys[usize::from(key == CLOUDFLARE_KEY)]
+    }
+
+    pub(crate) fn credential_status(&self, key: &str) -> &'static str {
+        let present = if key == CLOUDFLARE_KEY {
+            self.cloudflare_token.is_some()
+        } else {
+            self.abusech_auth_key.is_some()
+        };
+        match (self.key_is_set_in_environment(key), present) {
+            (true, true) => "Present from environment · authentication not verified",
+            (true, false) => "Blank environment setting overrides .env",
+            (false, true) => "Present from .env · authentication not verified",
+            (false, false) => "Not configured",
+        }
+    }
+
+    fn from_lookup(mut lookup: impl FnMut(&str) -> Option<String>) -> Self {
         Self {
             cloudflare_token: non_blank(lookup("CLOUDFLARE_API_TOKEN")),
             abusech_auth_key: non_blank(lookup("ABUSECH_AUTH_KEY")),
+            environment_keys: [false; 2],
+            dotenv_error: false,
         }
     }
+}
+
+pub(crate) const DOTENV_PATH: &str = ".env";
+const MAX_DOTENV_BYTES: u64 = 1024 * 1024;
+
+fn read_dotenv(
+    path: &std::path::Path,
+) -> std::io::Result<std::collections::HashMap<String, String>> {
+    let contents = read_dotenv_text(path)?;
+    let mut values = std::collections::HashMap::new();
+    for setting in dotenvy::from_read_iter(contents.as_bytes()) {
+        let (key, value) = setting
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed .env"))?;
+        values.entry(key).or_insert(value);
+    }
+    Ok(values)
+}
+
+fn read_dotenv_text(path: &std::path::Path) -> std::io::Result<String> {
+    use std::io::{self, Read};
+    let (file, _) = match crate::file::open_regular_file(path) {
+        Ok(opened) => opened,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(error),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_DOTENV_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_DOTENV_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            ".env exceeds its size limit",
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, ".env is not UTF-8"))
 }
 
 fn non_blank(value: Option<String>) -> Option<String> {
@@ -112,6 +189,7 @@ const CLOUDFLARE_KEY: &str = "CLOUDFLARE_API_TOKEN";
 pub(crate) enum CredentialChange<'a> {
     Set(&'a str),
     Remove,
+    #[cfg(test)]
     Cancel,
 }
 
@@ -137,20 +215,28 @@ pub(crate) fn apply_credential_change(
                     "credential must be non-empty and fit on one line",
                 ));
             }
-            update_env_file(path, key, Some(value)).map(|()| true)
+            update_env_file(path, key, Some(value))
         }
-        CredentialChange::Remove => update_env_file(path, key, None).map(|()| true),
+        CredentialChange::Remove => update_env_file(path, key, None),
+        #[cfg(test)]
         CredentialChange::Cancel => Ok(false),
     }
 }
 
-fn update_env_file(path: &std::path::Path, key: &str, value: Option<&str>) -> std::io::Result<()> {
-    use std::fs;
-    let existing = match fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(error),
-    };
+fn update_env_file(
+    path: &std::path::Path,
+    key: &str,
+    value: Option<&str>,
+) -> std::io::Result<bool> {
+    // The loader can read through a symlink, but the atomic rename would
+    // replace the link itself. Leave either file intact and require a manual edit.
+    if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "edit the linked .env directly",
+        ));
+    }
+    let existing = read_dotenv_text(path)?;
     let newline = if existing.contains("\r\n") {
         "\r\n"
     } else {
@@ -160,7 +246,15 @@ fn update_env_file(path: &std::path::Path, key: &str, value: Option<&str>) -> st
     let mut lines = Vec::new();
     let mut inserted = false;
     for line in existing.lines() {
-        if env_assignment_key(line) == Some(key) {
+        // Parse each assignment with the loader's grammar. Multiline
+        // assignments cannot be edited safely by this line-based editor.
+        let assignment = dotenvy::from_read_iter(line.as_bytes())
+            .next()
+            .transpose()
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "cannot safely edit .env")
+            })?;
+        if assignment.is_some_and(|(name, _)| name == key) {
             if !inserted {
                 if let Some(value) = value {
                     lines.push(quoted_assignment(key, value));
@@ -172,7 +266,7 @@ fn update_env_file(path: &std::path::Path, key: &str, value: Option<&str>) -> st
         }
     }
     if !inserted && value.is_none() {
-        return Ok(());
+        return Ok(false);
     }
     if !inserted && let Some(value) = value {
         lines.push(quoted_assignment(key, value));
@@ -181,14 +275,13 @@ fn update_env_file(path: &std::path::Path, key: &str, value: Option<&str>) -> st
     if had_trailing_newline || !updated.is_empty() {
         updated.push_str(newline);
     }
-    replace_file_safely(path, updated.as_bytes())
-}
-
-fn env_assignment_key(line: &str) -> Option<&str> {
-    let line = line.trim_start();
-    let line = line.strip_prefix("export ").unwrap_or(line);
-    let (name, _) = line.split_once('=')?;
-    Some(name.trim())
+    if updated.len() as u64 > MAX_DOTENV_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "updated .env exceeds its size limit",
+        ));
+    }
+    replace_file_safely(path, updated.as_bytes()).map(|()| true)
 }
 
 fn quoted_assignment(key: &str, value: &str) -> String {
@@ -311,6 +404,66 @@ mod credential_file_tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn load_uses_the_requested_file_and_preserves_external_precedence() {
+        let dir = TestDirectory::new();
+        let child = dir.0.join("child");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(dir.0.join(".env"), "ABUSECH_AUTH_KEY=parent-dummy\n").unwrap();
+        let path = child.join(".env");
+        assert!(
+            super::Config::load(&path, |_| None)
+                .abusech_auth_key
+                .is_none()
+        );
+        std::fs::write(
+            &path,
+            "export   ABUSECH_AUTH_KEY=child-dummy\nCLOUDFLARE_API_TOKEN=file-dummy\n",
+        )
+        .unwrap();
+        let config = super::Config::load(&path, |key| {
+            (key == "ABUSECH_AUTH_KEY").then(|| "external-dummy".into())
+        });
+        assert!(config.key_is_set_in_environment("ABUSECH_AUTH_KEY"));
+        assert_eq!(config.abusech_auth_key.as_deref(), Some("external-dummy"));
+        assert_eq!(config.cloudflare_token.as_deref(), Some("file-dummy"));
+        assert!(
+            apply_credential_change(&path, "ABUSECH_AUTH_KEY", CredentialChange::Remove).unwrap()
+        );
+        assert!(
+            !apply_credential_change(&path, "ABUSECH_AUTH_KEY", CredentialChange::Remove).unwrap()
+        );
+        std::fs::write(
+            &path,
+            "ABUSECH_AUTH_KEY=valid-dummy\nCLOUDFLARE_API_TOKEN=\"unterminated",
+        )
+        .unwrap();
+        let config = super::Config::load(&path, |_| None);
+        assert!(config.dotenv_error);
+        assert!(config.abusech_auth_key.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn editing_a_linked_env_preserves_the_link_and_target() {
+        let dir = TestDirectory::new();
+        let path = dir.0.join(".env");
+        let target = dir.0.join("shared.env");
+        let original = "ABUSECH_AUTH_KEY=fixture-key\n";
+        std::fs::write(&target, original).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(
+            super::Config::load(&path, |_| None)
+                .abusech_auth_key
+                .is_some()
+        );
+        assert!(
+            apply_credential_change(&path, "ABUSECH_AUTH_KEY", CredentialChange::Remove).is_err()
+        );
+        assert_eq!(std::fs::read_link(path).unwrap(), target);
+        assert_eq!(std::fs::read_to_string(target).unwrap(), original);
     }
 
     #[test]

@@ -211,6 +211,7 @@ fn more_menu(
 }
 
 fn configure_providers(editor: &mut InputEditor, config: &Config) {
+    use crate::config::DOTENV_PATH;
     use std::path::Path;
 
     loop {
@@ -223,20 +224,12 @@ fn configure_providers(editor: &mut InputEditor, config: &Config) {
         tui::note("Cloudflare Radar uses CLOUDFLARE_API_TOKEN.");
         tui::status(
             "abuse.ch key",
-            if config.abusech_auth_key.is_some() {
-                "Present · authentication not verified"
-            } else {
-                "Not configured"
-            },
+            config.credential_status("ABUSECH_AUTH_KEY"),
             tui::Status::Neutral,
         );
         tui::status(
             "Cloudflare token",
-            if config.cloudflare_token.is_some() {
-                "Present · authentication not verified"
-            } else {
-                "Not configured"
-            },
+            config.credential_status("CLOUDFLARE_API_TOKEN"),
             tui::Status::Neutral,
         );
         tui::note(
@@ -245,6 +238,9 @@ fn configure_providers(editor: &mut InputEditor, config: &Config) {
         tui::note(
             "Changes are read at startup; restart CyberFeed after saving or removing a value.",
         );
+        if config.dotenv_error {
+            tui::warning("The .env file could not be loaded. Check Setup Diagnostics.");
+        }
         let providers = [
             ("1", "abuse.ch Services", "Set or remove the shared key"),
             ("2", "Cloudflare Radar", "Set or remove the Radar token"),
@@ -252,19 +248,19 @@ fn configure_providers(editor: &mut InputEditor, config: &Config) {
         ];
         match tui::terminal::select_menu(
             "Configure Providers",
-            "Credentials remain hidden and are never tested during setup.",
+            "Choose a provider to see its active credential source.",
             &providers,
         )
         .as_str()
         {
-            "1" => edit_credential(editor, "ABUSECH_AUTH_KEY", "abuse.ch"),
-            "2" => edit_credential(editor, "CLOUDFLARE_API_TOKEN", "Cloudflare Radar"),
+            "1" => edit_credential(editor, config, "ABUSECH_AUTH_KEY", "abuse.ch"),
+            "2" => edit_credential(editor, config, "CLOUDFLARE_API_TOKEN", "Cloudflare Radar"),
             "0" => break,
             _ => terminal::invalid_choice(),
         }
     }
 
-    fn edit_credential(editor: &mut InputEditor, key: &str, provider: &str) {
+    fn edit_credential(editor: &mut InputEditor, config: &Config, key: &str, provider: &str) {
         use crate::config::{CredentialChange, apply_credential_change};
 
         terminal::clear_screen();
@@ -276,7 +272,11 @@ fn configure_providers(editor: &mut InputEditor, config: &Config) {
             ("2", "Remove Saved Value", "Delete this key from .env"),
             ("0", "Cancel", "Return without changing configuration"),
         ];
-        let action = tui::terminal::select_menu("Update Credential", provider, &actions);
+        let action = tui::terminal::select_menu(
+            "Update Credential",
+            config.credential_status(key),
+            &actions,
+        );
         let result = match action.as_str() {
             "1" => {
                 let Some(secret) = terminal::read_secret("  New credential (hidden): ") else {
@@ -292,7 +292,7 @@ fn configure_providers(editor: &mut InputEditor, config: &Config) {
                 {
                     return;
                 }
-                apply_credential_change(Path::new(".env"), key, CredentialChange::Set(&secret))
+                apply_credential_change(Path::new(DOTENV_PATH), key, CredentialChange::Set(&secret))
             }
             "2" => {
                 if !terminal::read_input(editor, "  Remove this key from .env? [y/N]: ", false)
@@ -300,9 +300,9 @@ fn configure_providers(editor: &mut InputEditor, config: &Config) {
                 {
                     return;
                 }
-                apply_credential_change(Path::new(".env"), key, CredentialChange::Remove)
+                apply_credential_change(Path::new(DOTENV_PATH), key, CredentialChange::Remove)
             }
-            "0" => apply_credential_change(Path::new(".env"), key, CredentialChange::Cancel),
+            "0" => return,
             _ => return,
         };
         match result {
@@ -314,13 +314,19 @@ fn configure_providers(editor: &mut InputEditor, config: &Config) {
                 );
                 tui::status(
                     "Credential",
-                    "Saved without displaying its value",
+                    if config.key_is_set_in_environment(key) {
+                        "Saved .env changed. The environment setting still takes precedence."
+                    } else {
+                        "Saved .env changed. Restart to load the new configuration."
+                    },
                     tui::Status::Success,
                 );
                 tui::navigation_footer("Enter", "Return");
                 terminal::pause();
             }
-            Ok(false) => {}
+            Ok(false) => terminal::show_error(
+                "The current directory’s .env has no saved value for this key.",
+            ),
             Err(_) => terminal::show_error(
                 "The .env update or cleanup reported a filesystem problem. No credential value was displayed; review .env and any temporary files before retrying.",
             ),
@@ -529,6 +535,11 @@ fn setup_diagnostics(config: &Config) {
         "Local checks only · no network requests",
     );
     tui::section("PROVIDER CONFIGURATION");
+    if config.dotenv_error {
+        tui::warning(
+            "Could not load .env from the current directory. File credentials were ignored.",
+        );
+    }
     tui::field(
         "MalwareBazaar",
         if config.abusech_auth_key.is_some() {

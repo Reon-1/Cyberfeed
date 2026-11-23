@@ -12,6 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use std::io::{self, Stdout};
 use std::sync::{Mutex, OnceLock};
+use unicode_segmentation::UnicodeSegmentation;
 
 type UiTerminal = Terminal<CrosstermBackend<Stdout>>;
 static TERMINAL: OnceLock<Mutex<UiTerminal>> = OnceLock::new();
@@ -31,29 +32,19 @@ impl TerminalSession {
             let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
             return Err(error);
         }
-        match terminal()
+        let session = Self;
+        terminal()
             .ok_or_else(|| io::Error::other("terminal unavailable"))?
             .lock()
             .map_err(|_| io::Error::other("terminal lock poisoned"))?
-            .clear()
-        {
-            Ok(()) => Ok(Self),
-            Err(error) => {
-                let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
-                Err(error)
-            }
-        }
+            .clear()?;
+        Ok(session)
     }
 }
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        if let Some(term) = TERMINAL.get()
-            && let Ok(mut term) = term.lock()
-        {
-            let _ = term.show_cursor();
-        }
         let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
     }
 }
@@ -66,7 +57,78 @@ pub(crate) fn clear() {
     }
 }
 
-pub(crate) fn draw_content(title: &str, lines: &[Line<'static>], prompt: bool) {
+#[derive(Default)]
+pub(crate) struct EvidenceScroll {
+    offset: usize,
+    width: u16,
+    rows: Vec<Line<'static>>,
+    page: usize,
+}
+
+impl EvidenceScroll {
+    pub(crate) fn move_page(&mut self, forward: bool) {
+        let step = self.page.saturating_sub(1).max(1);
+        self.offset = if forward {
+            self.offset.saturating_add(step)
+        } else {
+            self.offset.saturating_sub(step)
+        };
+    }
+
+    fn viewport(&mut self, lines: &[Line<'static>], width: u16, height: u16) -> &[Line<'static>] {
+        if self.width != width {
+            self.width = width;
+            self.rows = wrap_evidence(lines, usize::from(width));
+        }
+        self.page = usize::from(height);
+        self.offset = self.offset.min(self.rows.len().saturating_sub(self.page));
+        &self.rows[self.offset..self.rows.len().min(self.offset + self.page)]
+    }
+}
+
+// Preserve styles and break long words on grapheme boundaries. The offset is
+// usize so even the end of a large saved report is reachable.
+fn wrap_evidence(lines: &[Line<'static>], width: usize) -> Vec<Line<'static>> {
+    use unicode_width::UnicodeWidthStr;
+    let mut out = Vec::new();
+    for line in lines {
+        let mut spans = Vec::new();
+        let mut used = 0;
+        for span in &line.spans {
+            let mut start = 0;
+            for (index, grapheme) in span.content.grapheme_indices(true) {
+                let cells = grapheme.width();
+                let newline = grapheme == "\n";
+                if newline || (used > 0 && used + cells > width) {
+                    if start < index {
+                        spans.push(Span::styled(
+                            span.content[start..index].to_owned(),
+                            span.style,
+                        ));
+                    }
+                    out.push(Line::from(std::mem::take(&mut spans)).style(line.style));
+                    used = 0;
+                    start = index + if newline { grapheme.len() } else { 0 };
+                }
+                if !newline {
+                    used += cells;
+                }
+            }
+            if start < span.content.len() {
+                spans.push(Span::styled(span.content[start..].to_owned(), span.style));
+            }
+        }
+        out.push(Line::from(spans).style(line.style));
+    }
+    out
+}
+
+pub(crate) fn draw_content(
+    title: &str,
+    lines: &[Line<'static>],
+    prompt: bool,
+    scroll: Option<&mut EvidenceScroll>,
+) {
     let Some(term) = terminal() else { return };
     let Ok(mut term) = term.lock() else { return };
     let _ = term.draw(|frame| {
@@ -79,7 +141,7 @@ pub(crate) fn draw_content(title: &str, lines: &[Line<'static>], prompt: bool) {
             );
             return;
         }
-        let (title_area, body_area, _) = content_layout(area, prompt);
+        let (title_area, mut body_area, _) = content_layout(area, prompt);
         let content_width = body_area.width;
         let content_x = body_area.x;
         frame.render_widget(
@@ -91,13 +153,28 @@ pub(crate) fn draw_content(title: &str, lines: &[Line<'static>], prompt: bool) {
             )),
             Rect::new(content_x, title_area.y, content_width, title_area.height),
         );
-        let content = Paragraph::new(lines.to_vec())
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray)),
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray));
+        let content = if let Some(scroll) = scroll {
+            body_area.height = body_area.height.saturating_sub(1);
+            let inner = block.inner(body_area);
+            let rows = scroll.viewport(lines, inner.width, inner.height).to_vec();
+            let footer = format!(
+                "PgUp/PgDn · {}/{}",
+                scroll.offset + 1,
+                scroll.rows.len().max(1)
             );
+            frame.render_widget(
+                Paragraph::new(footer),
+                Rect::new(body_area.x, body_area.bottom(), body_area.width, 1),
+            );
+            Paragraph::new(rows).block(block)
+        } else {
+            Paragraph::new(lines.to_vec())
+                .wrap(Wrap { trim: false })
+                .block(block)
+        };
         frame.render_widget(content, body_area);
     });
 }
@@ -317,6 +394,33 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
+
+    #[test]
+    fn evidence_paging_wraps_long_unicode_rows_and_reaches_the_end_after_resize() {
+        let lines = vec![
+            ratatui::text::Line::from("界é".repeat(90)),
+            ratatui::text::Line::from("final evidence".to_owned()),
+        ];
+        let mut scroll = super::EvidenceScroll::default();
+        let initial = scroll.viewport(&lines, 20, 4);
+        assert_eq!(initial.len(), 4);
+        assert!(initial.iter().all(|line| line.width() <= 20));
+        for _ in 0..30 {
+            scroll.move_page(true);
+            scroll.viewport(&lines, 20, 4);
+        }
+        assert_eq!(
+            scroll.viewport(&lines, 20, 4).last().unwrap().to_string(),
+            "final evidence"
+        );
+        let resized = scroll.viewport(&lines, 40, 7);
+        assert_eq!(resized.last().unwrap().to_string(), "final evidence");
+        scroll.move_page(false);
+        assert_ne!(
+            scroll.viewport(&lines, 40, 7).last().unwrap().to_string(),
+            "final evidence"
+        );
+    }
 
     #[test]
     fn menu_navigation_clamps_at_both_ends() {

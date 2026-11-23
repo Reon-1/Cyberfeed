@@ -161,29 +161,47 @@ fn indicator_entries<'a>(
     extraction: Option<&'a TextIndicators>,
     lookups: &'a [ProviderLookup],
 ) -> Vec<IndicatorEntry<'a>> {
-    let mut entries = Vec::new();
-    if let Some(extraction) = extraction {
-        entries.extend(extraction.indicators.iter().map(|indicator| {
+    let Some(extraction) = extraction else {
+        return Vec::new();
+    };
+    // Keep original lookup order, including host pivots interleaved with
+    // exact URL lookups. Index once instead of comparing every pair.
+    let mut by_value = std::collections::HashMap::<&str, Vec<(usize, &ProviderLookup)>>::new();
+    for (index, lookup) in lookups.iter().enumerate() {
+        if lookup.subject != LookupSubject::OriginalFileSha256 {
+            by_value
+                .entry(&lookup.queried_hash)
+                .or_default()
+                .push((index, lookup));
+        }
+    }
+    extraction
+        .indicators
+        .iter()
+        .map(|indicator| {
+            let mut observations = by_value
+                .get(indicator.value.as_str())
+                .cloned()
+                .unwrap_or_default();
+            if indicator.indicator_type == IndicatorType::Url
+                && let Some((host, _)) = super::lookups::host_from_url(&indicator.value)
+                && let Some(pivots) = by_value.get(host.as_str())
+            {
+                observations.extend(
+                    pivots
+                        .iter()
+                        .copied()
+                        .filter(|(_, lookup)| lookup.provider == "URLhaus"),
+                );
+                observations.sort_unstable_by_key(|(index, _)| *index);
+            }
             IndicatorEntry {
                 value: &indicator.value,
                 indicator_type: indicator.indicator_type,
-                lookups: lookups
-                    .iter()
-                    .filter(|lookup| {
-                        lookup.subject != LookupSubject::OriginalFileSha256
-                            && (lookup.queried_hash == indicator.value
-                                || (indicator.indicator_type == IndicatorType::Url
-                                    && super::lookups::host_from_url(&indicator.value)
-                                        .is_some_and(|(host, _)| {
-                                            lookup.provider == "URLhaus"
-                                                && lookup.queried_hash == host
-                                        })))
-                    })
-                    .collect(),
+                lookups: observations.into_iter().map(|(_, lookup)| lookup).collect(),
             }
-        }));
-    }
-    entries
+        })
+        .collect()
 }
 
 /// Let users inspect individual recorded outcomes before the existing save prompt.
@@ -391,13 +409,13 @@ fn review_details(
                 render_details(&entries[index]);
                 tui::navigation_footer("Enter", "Return to quick summary");
                 // Any completed input returns to the already-built overview; no lookup is rerun.
-                let _ = terminal::read_input(editor, "  Press Enter to return: ", false);
+                let _ = terminal::read_evidence(editor, "Enter to return: ");
             }
             Selection::Original => {
                 terminal::clear_screen();
                 render_original_details(file, lookups);
                 tui::navigation_footer("Enter", "Return to quick summary");
-                let _ = terminal::read_input(editor, "  Press Enter to return: ", false);
+                let _ = terminal::read_evidence(editor, "Enter to return: ");
             }
             Selection::Invalid => terminal::invalid_choice(),
         }

@@ -1,7 +1,8 @@
 use crate::indicator::{Indicator, MANUAL_HASH_LENGTHS, classify};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs::File;
+use std::fs::{File, Metadata, OpenOptions};
+use std::io;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -170,15 +171,47 @@ pub(crate) fn inspect_file_with_deadline(
     inspect_file_until(path, Some(deadline))
 }
 
-fn inspect_file_until(path: &Path, deadline: Option<Instant>) -> Result<FileInspection, String> {
-    let metadata = std::fs::metadata(path)
-        .map_err(|error| format!("Could not open '{}': {error}", path.display()))?;
-
-    if !metadata.is_file() {
-        return Err(format!("'{}' is not a regular file.", path.display()));
+pub(crate) fn open_regular_file(path: &Path) -> io::Result<(File, Metadata)> {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "not a regular file");
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(invalid());
     }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    // A path can be replaced after the initial check. A FIFO open must not wait
+    // for a writer before we can inspect the actual handle.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(invalid());
+    }
+    Ok((file, metadata))
+}
 
-    let file = File::open(path)
+pub(crate) fn check_file_snapshot(
+    before: &Metadata,
+    after: &Metadata,
+    bytes_read: u64,
+) -> io::Result<()> {
+    if before.len() != bytes_read
+        || after.len() != bytes_read
+        || before.modified().ok() != after.modified().ok()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file changed during inspection",
+        ));
+    }
+    Ok(())
+}
+
+fn inspect_file_until(path: &Path, deadline: Option<Instant>) -> Result<FileInspection, String> {
+    let (file, metadata) = open_regular_file(path)
         .map_err(|error| format!("Could not open '{}': {error}", path.display()))?;
 
     let mut reader = BufReader::new(file);
@@ -195,6 +228,9 @@ fn inspect_file_until(path: &Path, deadline: Option<Instant>) -> Result<FileInsp
             .read(&mut buffer)
             .map_err(|error| format!("Could not read '{}': {error}", path.display()))?;
 
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err("File inspection exceeded the overall investigation time budget. No partial hash or report was saved.".into());
+        }
         if bytes_read == 0 {
             break;
         }
@@ -204,6 +240,11 @@ fn inspect_file_until(path: &Path, deadline: Option<Instant>) -> Result<FileInsp
         size += bytes_read as u64;
     }
 
+    let after = reader
+        .get_ref()
+        .metadata()
+        .map_err(|error| error.to_string())?;
+    check_file_snapshot(&metadata, &after, size).map_err(|error| error.to_string())?;
     let name = path
         .file_name()
         .unwrap_or(path.as_os_str())

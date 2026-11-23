@@ -9,13 +9,13 @@ mod providers;
 mod report;
 mod tui;
 
-use dotenvy::dotenv;
 use reqwest::blocking::Client;
 use std::time::Duration;
 
 fn main() {
-    let _ = dotenv();
-    let config = config::Config::from_lookup(|key| std::env::var(key).ok());
+    let config = config::Config::load(std::path::Path::new(config::DOTENV_PATH), |key| {
+        std::env::var_os(key).map(|value| value.into_string().unwrap_or_default())
+    });
 
     let client = match build_http_client() {
         Ok(client) => client,
@@ -25,7 +25,10 @@ fn main() {
         }
     };
 
-    app::run(&client, &config);
+    if let Err(error) = app::run(&client, &config) {
+        eprintln!("Could not initialize the terminal UI: {error}");
+        std::process::exit(1);
+    }
 }
 
 fn build_http_client() -> Result<Client, reqwest::Error> {

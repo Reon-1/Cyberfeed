@@ -25,51 +25,54 @@ struct IndicatorReportCandidate {
 }
 
 pub(super) fn menu(editor: &mut InputEditor) {
+    terminal::clear_screen();
+    tui::header("SAVED REPORTS", "Indexing local reports…");
+    let collection = match report_files::index(Path::new("reports")) {
+        Ok(collection) => collection,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            tui::section("NO REPORT DIRECTORY");
+            tui::field("Location", "reports/ in the current working directory");
+            tui::box_line("Save a file or current-session report to create this directory.");
+            return_to_parent();
+            terminal::pause();
+            return;
+        }
+        Err(error) => {
+            tui::section("COULD NOT READ REPORT DIRECTORY");
+            tui::field("Details", error);
+            return_to_parent();
+            terminal::pause();
+            return;
+        }
+    };
+
     let mut page_start = 0usize;
     loop {
         terminal::clear_screen();
         tui::header("SAVED REPORTS", "Your saved investigations · newest first");
-        let collection = match report_files::discover(Path::new("reports")) {
-            Ok(collection) => collection,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                tui::section("NO REPORT DIRECTORY");
-                tui::field("Location", "reports/ in the current working directory");
-                tui::box_line("Save a file or current-session report to create this directory.");
-                return_to_parent();
-                terminal::pause();
-                break;
-            }
-            Err(error) => {
-                tui::section("COULD NOT READ REPORT DIRECTORY");
-                tui::field("Details", error);
-                return_to_parent();
-                terminal::pause();
-                break;
-            }
-        };
-
         let page_size = view::report_page_capacity(tui::terminal_dimensions().1);
-        let page_count = collection.reports.len().div_ceil(page_size).max(1);
-        let page_number = page_start / page_size + 1;
+        let page_start_max = collection.reports.len().saturating_sub(1);
+        page_start = page_start.min(page_start_max);
         view::report_list(&collection, page_start, page_size);
-        let Some(selection) = terminal::read_input(
-            editor,
-            &format!(
-                "\n  Report number · N/P page {page_number}/{page_count} · C same-file comparison · I compare indicators · 0 back: "
-            ),
-            false,
-        ) else {
+        let Some(selection) = terminal::read_input(editor, "Report or action: ", false) else {
             break;
         };
         if selection == "0" {
             break;
         }
-        if selection.eq_ignore_ascii_case("c") {
-            compare_reports(editor, &collection.reports);
-            continue;
-        }
-        if selection.eq_ignore_ascii_case("i") {
-            compare_indicator_checks(editor, &collection.reports);
+        if selection.eq_ignore_ascii_case("c") || selection.eq_ignore_ascii_case("i") {
+            let comparison = collection.comparison_reports();
+            if !comparison.unavailable.is_empty() {
+                terminal::show_error(&format!(
+                    "{} indexed report(s) are now unavailable. Comparison will use the remaining reports.",
+                    comparison.unavailable.len()
+                ));
+            }
+            if selection.eq_ignore_ascii_case("c") {
+                compare_reports(editor, &comparison.reports);
+            } else {
+                compare_indicator_checks(editor, &comparison.reports);
+            }
             continue;
         }
         if selection.eq_ignore_ascii_case("n") {
@@ -91,23 +94,33 @@ pub(super) fn menu(editor: &mut InputEditor) {
             .min(page_size);
         match selected_index(&selection, visible_count).map(|index| page_start + index) {
             Some(index) => {
-                let saved = &collection.reports[index];
+                let saved = match report_files::open_report(&collection.reports[index].path) {
+                    Ok(saved) => saved,
+                    Err(error) => {
+                        terminal::show_error(&format!("Could not open report: {error}"));
+                        continue;
+                    }
+                };
                 if let report_files::SavedReportContents::Session(report) = &saved.contents {
                     browse_session_report(editor, report);
                 } else {
                     terminal::clear_screen();
-                    view::report_screen(saved);
+                    view::report_screen(&saved);
                     let Some(report) = saved.contents.file_report() else {
                         unreachable!("session reports are opened in the session viewer")
                     };
-                    let Some(action) = terminal::read_input(
-                        editor,
-                        "\n  Enter to return, or S to export STIX 2.1: ",
-                        false,
-                    ) else {
+                    let Some(action) =
+                        terminal::read_evidence(editor, "S export STIX · Enter return: ")
+                    else {
                         continue;
                     };
                     if action.eq_ignore_ascii_case("s") {
+                        if report.identity_incomplete() {
+                            terminal::show_error(
+                                "STIX export requires a complete file identity. Re-scan the original log if it is available.",
+                            );
+                            continue;
+                        }
                         if crate::report::stix_indicator_count(report) == 0 {
                             terminal::show_error(
                                 "This report contains no supported indicators to export.",
@@ -144,11 +157,7 @@ fn browse_session_report(editor: &mut InputEditor, report: &SessionReport) {
     loop {
         terminal::clear_screen();
         view::session_check_screen(report, index);
-        let Some(selection) = terminal::read_input(
-            editor,
-            "\n  N next check · P previous check · Enter return: ",
-            false,
-        ) else {
+        let Some(selection) = terminal::read_evidence(editor, "N/P check · Enter return: ") else {
             break;
         };
         match selection.to_ascii_lowercase().as_str() {
@@ -265,7 +274,7 @@ fn compare_reports(editor: &mut InputEditor, reports: &[report_files::SavedRepor
     };
     terminal::clear_screen();
     view::comparison_screen(older, newer);
-    let _ = terminal::read_input(editor, "\n  Press Enter to continue: ", false);
+    let _ = terminal::read_evidence(editor, "Enter to return: ");
 }
 
 fn indicator_comparison_candidates(
@@ -300,13 +309,25 @@ fn indicator_comparison_candidates(
                     })
                     .cloned()
                     .collect::<Vec<_>>();
-                if indicator_type == IndicatorType::Hash && !original_lookups.is_empty() {
+                if indicator_type == IndicatorType::Hash
+                    && !report.identity_incomplete()
+                    && !original_lookups.is_empty()
+                {
                     candidates.push(indicator_candidate(
                         file_hash,
                         original_lookups,
                         report_time,
                         format!("Standalone · {source_name}"),
                     ));
+                }
+                let mut by_value = std::collections::HashMap::<&str, Vec<&ProviderLookup>>::new();
+                for lookup in &report.provider_lookups {
+                    if lookup.subject != crate::report::LookupSubject::OriginalFileSha256 {
+                        by_value
+                            .entry(&lookup.queried_hash)
+                            .or_default()
+                            .push(lookup);
+                    }
                 }
                 let mut seen = std::collections::HashSet::new();
                 for indicator in &report.local_inspection.indicators {
@@ -315,16 +336,8 @@ fn indicator_comparison_candidates(
                     {
                         continue;
                     }
-                    let lookups = report
-                        .provider_lookups
-                        .iter()
-                        .filter(|lookup| {
-                            lookup.subject != crate::report::LookupSubject::OriginalFileSha256
-                                && lookup.queried_hash == indicator.value
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    if !lookups.is_empty() {
+                    if let Some(matches) = by_value.get(indicator.value.as_str()) {
+                        let lookups = matches.iter().map(|lookup| (*lookup).clone()).collect();
                         candidates.push(indicator_candidate(
                             indicator.clone(),
                             lookups,
@@ -460,12 +473,12 @@ fn compare_indicator_checks(editor: &mut InputEditor, reports: &[report_files::S
             lookups: &newer.provider_lookups,
         },
     );
-    let _ = terminal::read_input(editor, "\n  Press Enter to continue: ", false);
+    let _ = terminal::read_evidence(editor, "Enter to return: ");
 }
 
 fn prompt_report_index(editor: &mut InputEditor, count: usize, prompt: &str) -> Option<usize> {
     loop {
-        let input = terminal::read_input(editor, prompt, false)?;
+        let input = terminal::read_evidence(editor, prompt)?;
         if input == "0" {
             return None;
         }

@@ -159,6 +159,7 @@ pub fn align_prompt(prompt: &str) -> String {
 }
 
 pub fn status(label: &str, value: &str, kind: Status) {
+    let label = sanitize_terminal_text(label);
     let style = theme::status_style(kind);
     add_line(Line::from(vec![
         Span::styled("● ", style),
@@ -316,14 +317,21 @@ pub fn reset_screen() {
 pub fn redraw_current_screen() {
     SCREEN.with(|screen| {
         let screen = screen.borrow();
-        terminal::draw_content(&screen.title, &screen.lines, false);
+        terminal::draw_content(&screen.title, &screen.lines, false, None);
     });
 }
 
 pub fn redraw_current_screen_with_prompt() {
     SCREEN.with(|screen| {
         let screen = screen.borrow();
-        terminal::draw_content(&screen.title, &screen.lines, true);
+        terminal::draw_content(&screen.title, &screen.lines, true, None);
+    });
+}
+
+pub(crate) fn redraw_evidence(scroll: &mut terminal::EvidenceScroll, prompt: bool) {
+    SCREEN.with(|screen| {
+        let screen = screen.borrow();
+        terminal::draw_content(&screen.title, &screen.lines, prompt, Some(scroll));
     });
 }
 
@@ -406,20 +414,11 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
 }
 
 pub(crate) fn visible_width(text: &str) -> usize {
-    strip_ansi_sgr(text).chars().map(display_width).sum()
+    unicode_width::UnicodeWidthStr::width(strip_ansi_sgr(text).as_str())
 }
 
 pub fn display_width(character: char) -> usize {
-    let code = character as u32;
-    if matches!(code,
-        0x1100..=0x115f | 0x2329..=0x232a | 0x2e80..=0xa4cf | 0xac00..=0xd7a3 |
-        0xf900..=0xfaff | 0xfe10..=0xfe19 | 0xfe30..=0xfe6f | 0xff00..=0xff60 |
-        0xffe0..=0xffe6 | 0x1f1e6..=0x1f1ff | 0x1f300..=0x1faff | 0x20000..=0x3fffd
-    ) {
-        2
-    } else {
-        1
-    }
+    unicode_width::UnicodeWidthChar::width(character).unwrap_or(0)
 }
 
 #[cfg(test)]

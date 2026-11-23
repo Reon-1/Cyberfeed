@@ -44,6 +44,19 @@ pub(super) fn investigate_file(
                 continue;
             }
         };
+        if !auth_key.trim().is_empty() {
+            terminal::clear_screen();
+            tui::header("FILE LOOKUP", "Confirm sharing with configured providers");
+            tui::warning(
+                "Providers receive the SHA-256 and supported indicators, including full URLs with query strings.",
+            );
+            tui::note("Use Batch File Triage under More Tools for local-only checks.");
+            if !terminal::read_evidence(editor, "Share? [y/N]: ")
+                .is_some_and(|answer| answer.eq_ignore_ascii_case("y"))
+            {
+                return;
+            }
+        }
         terminal::clear_screen();
         let progress = results::LiveProgress::new();
         progress.phase("Inspecting file, hashing and extracting indicators in one pass…");
@@ -386,6 +399,19 @@ pub(super) fn check_indicator_value(
         }
     };
 
+    if indicator_type == IndicatorType::Url && !auth_key.trim().is_empty() {
+        terminal::clear_screen();
+        tui::header("CHECK URL", "Confirm sharing with configured providers");
+        tui::warning(
+            "The full URL, including credentials, query parameters and fragments if present, is sent to providers that support exact URL lookup.",
+        );
+        tui::field("URL", &value);
+        if !terminal::read_evidence(editor, "Send URL? [y/N]: ")
+            .is_some_and(|answer| answer.eq_ignore_ascii_case("y"))
+        {
+            return;
+        }
+    }
     tui::header("VALUE SEARCH", "Checking providers one at a time");
     tui::field("Value", &value);
     tui::note("A provider match applies to this indicator, not automatically to a file.");
@@ -434,7 +460,7 @@ fn review_value_results(
                 terminal::clear_screen();
                 render_value_details(indicator_type, value, lookups);
                 tui::navigation_footer("Enter", "Return to the result summary");
-                terminal::pause();
+                terminal::pause_evidence();
             }
             "0" => return,
             _ => terminal::invalid_choice(),
@@ -572,7 +598,7 @@ fn save_indicator_check_prompt(
 pub(super) fn view_indicators(investigation: &Investigation) {
     terminal::clear_screen();
     render_current_session(investigation);
-    terminal::pause();
+    terminal::pause_evidence();
 }
 
 fn render_current_session(investigation: &Investigation) {
@@ -581,14 +607,13 @@ fn render_current_session(investigation: &Investigation) {
         "Values checked and results recorded so far",
     );
     investigation.display_indicators();
-    if !investigation.provider_lookups().is_empty() {
+    if investigation.provider_lookups().next().is_some() {
         tui::section("PROVIDER OBSERVATIONS");
         for lookup in investigation.provider_lookups() {
             provider_views::display_lookup(&lookup.provider, &lookup.queried_hash, &lookup.outcome);
         }
         if investigation
             .provider_lookups()
-            .iter()
             .any(|lookup| lookup.outcome == LookupOutcome::NotFound)
         {
             tui::warning("NOT FOUND is a provider response at lookup time, not a safety verdict.");

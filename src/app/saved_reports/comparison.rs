@@ -23,7 +23,9 @@ pub(super) fn compare(
     older: &InvestigationReport,
     newer: &InvestigationReport,
 ) -> ReportComparison {
-    let same_subject = older.file.sha256.eq_ignore_ascii_case(&newer.file.sha256);
+    let same_subject = !older.identity_incomplete()
+        && !newer.identity_incomplete()
+        && older.file.sha256.eq_ignore_ascii_case(&newer.file.sha256);
     let mut result = ReportComparison {
         same_subject,
         unchanged_indicators: 0,

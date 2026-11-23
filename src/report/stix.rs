@@ -18,6 +18,7 @@ pub fn stix_bundle(report: &InvestigationReport) -> Value {
         .local_inspection
         .indicators
         .iter()
+        .filter(|_| !report.identity_incomplete())
         .filter_map(|indicator| {
             stix_indicator(
                 indicator,
@@ -30,6 +31,9 @@ pub fn stix_bundle(report: &InvestigationReport) -> Value {
 }
 
 pub fn stix_indicator_count(report: &InvestigationReport) -> usize {
+    if report.identity_incomplete() {
+        return 0;
+    }
     report
         .local_inspection
         .indicators
@@ -126,6 +130,12 @@ pub fn save_stix_bundle(
     report: &InvestigationReport,
     directory: &Path,
 ) -> std::io::Result<PathBuf> {
+    if report.identity_incomplete() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "cannot export STIX with incomplete file identity",
+        ));
+    }
     if report.generated_at_unix_seconds > MAX_STIX_UNIX_SECONDS {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,

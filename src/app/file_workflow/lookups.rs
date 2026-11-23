@@ -546,6 +546,9 @@ pub(super) fn outcome_from_malwarebazaar_result(
                 "MalwareBazaar rejected the configured Auth-Key (HTTP {status}); check ABUSECH_AUTH_KEY."
             ),
         },
+        Err(error @ MalwareLookupError::FeedRejected) => LookupOutcome::ApiError {
+            explanation: error.to_string(),
+        },
         Err(MalwareLookupError::Http { status, .. }) => LookupOutcome::ApiError {
             explanation: format!("MalwareBazaar returned HTTP {status}."),
         },

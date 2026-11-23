@@ -3,7 +3,7 @@ use crate::indicator::{Indicator, IndicatorType};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 pub const SESSION_REPORT_TYPE: &str = "SESSION";
 /// Saved JSON reports are bounded to this size when written and reopened.
 pub const MAX_SAVED_REPORT_BYTES: u64 = 32 * 1024 * 1024;
@@ -64,6 +64,8 @@ pub struct ReportFile {
     pub filename: String,
     pub size_bytes: u64,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub identity_incomplete: bool,
     pub inspected_locally_not_executed_or_uploaded: bool,
 }
 
@@ -224,6 +226,28 @@ pub struct MatchDetails {
 }
 
 impl InvestigationReport {
+    pub fn identity_incomplete(&self) -> bool {
+        // Legacy log hunts used the normal file report shape and could hash
+        // only a prefix when extraction was limited. Batch reports can share
+        // this shape, so handle ambiguous reports conservatively.
+        self.file.identity_incomplete
+            || (self.schema_version < 6
+                && self.provider_lookups.is_empty()
+                && matches!(
+                    self.local_inspection.text_extraction,
+                    TextExtraction::Performed {
+                        limit_reached: true
+                    }
+                ))
+    }
+
+    pub(crate) fn upgrade_legacy(&mut self) {
+        if self.schema_version < SCHEMA_VERSION {
+            self.file.identity_incomplete = self.identity_incomplete();
+            self.schema_version = SCHEMA_VERSION;
+        }
+    }
+
     pub fn new(
         file: &FileInfo,
         indicators: Vec<Indicator>,
@@ -234,7 +258,7 @@ impl InvestigationReport {
         Self {
             schema_version: SCHEMA_VERSION,
             generated_at_unix_seconds: now_seconds(),
-            file: ReportFile { filename: file.name.clone(), size_bytes: file.size, sha256: file.sha256.clone(), inspected_locally_not_executed_or_uploaded: true },
+            file: ReportFile { filename: file.name.clone(), size_bytes: file.size, sha256: file.sha256.clone(), identity_incomplete: false, inspected_locally_not_executed_or_uploaded: true },
             local_inspection: LocalInspection {
                 text_extraction: extraction.map_or(TextExtraction::SkippedBinaryOrNonText, |limit_reached| TextExtraction::Performed { limit_reached }),
                 indicators,

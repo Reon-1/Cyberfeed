@@ -1,11 +1,12 @@
 //! Bounded streaming extraction for ordinary text and JSON Lines logs.
+use crate::file::{check_file_snapshot, open_regular_file};
 use crate::indicator::{EXTRACTED_HASH_LENGTHS, Indicator, IndicatorType, classify};
 use crate::report::SourceOccurrence;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 pub const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_LINE_BYTES: usize = 16 * 1024;
@@ -22,20 +23,20 @@ pub struct LogHunt {
 }
 
 pub fn inspect_log(path: &Path) -> Result<LogHunt, String> {
-    let file = File::open(path).map_err(|e| format!("Could not open '{}': {e}", path.display()))?;
-    let metadata = file
-        .metadata()
-        .map_err(|e| format!("Could not inspect '{}': {e}", path.display()))?;
-    if !metadata.is_file() {
-        return Err(format!("'{}' is not a regular file.", path.display()));
-    }
-    if metadata.len() > MAX_LOG_BYTES {
+    inspect_log_with_limit(path, MAX_LOG_BYTES)
+}
+
+fn inspect_log_with_limit(path: &Path, max_bytes: u64) -> Result<LogHunt, String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let (file, metadata) =
+        open_regular_file(path).map_err(|e| format!("Could not open '{}': {e}", path.display()))?;
+    if metadata.len() > max_bytes {
         return Err(format!(
             "'{}' exceeds the 64 MiB log limit.",
             path.display()
         ));
     }
-    let mut reader = BufReader::new(file);
+    let mut reader = BufReader::new(file.take(max_bytes + 1));
     let mut hasher = Sha256::new();
     let mut total = 0u64;
     let mut line_number = 0u64;
@@ -44,14 +45,20 @@ pub fn inspect_log(path: &Path) -> Result<LogHunt, String> {
     let mut seen = HashSet::new();
     let mut occurrences = Vec::new();
     let mut limit_reached = false;
+    let mut collecting = true;
+    let source_filename = path
+        .file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned();
     loop {
         line.clear();
         let (line_bytes, oversized, ended) = read_limited_line(
             &mut reader,
             &mut line,
-            MAX_LINE_BYTES,
-            MAX_LOG_BYTES.saturating_sub(total),
+            if collecting { MAX_LINE_BYTES } else { 0 },
             &mut hasher,
+            deadline,
         )
         .map_err(|e| format!("Could not read '{}': {e}", path.display()))?;
         if line_bytes == 0 && ended {
@@ -59,24 +66,27 @@ pub fn inspect_log(path: &Path) -> Result<LogHunt, String> {
         }
         total = total.saturating_add(line_bytes as u64);
         line_number += 1;
+        if total > max_bytes {
+            return Err("Log exceeded the 64 MiB limit; no file identity was saved.".into());
+        }
+        if !collecting {
+            continue;
+        }
         if oversized {
             limit_reached = true;
             continue;
         }
         let Ok(text) = std::str::from_utf8(&line) else {
+            limit_reached = true;
             continue;
         };
-        let source_filename = path
-            .file_name()
-            .unwrap_or(path.as_os_str())
-            .to_string_lossy()
-            .into_owned();
         let context = bounded_context(text);
         for (value, kind) in candidates(text) {
             // Keep every reported indicator tied to at least one saved source
             // occurrence. Do not add a new unique value after provenance is full.
             if occurrences.len() >= MAX_OCCURRENCES {
                 limit_reached = true;
+                collecting = false;
                 break;
             }
             let indicator = Indicator::new(value.clone(), kind);
@@ -87,6 +97,7 @@ pub fn inspect_log(path: &Path) -> Result<LogHunt, String> {
             if !seen.contains(&(kind, key.clone())) {
                 if seen.len() >= MAX_UNIQUE_INDICATORS {
                     limit_reached = true;
+                    collecting = false;
                     break;
                 }
                 seen.insert((kind, key));
@@ -100,17 +111,13 @@ pub fn inspect_log(path: &Path) -> Result<LogHunt, String> {
                 context: context.clone(),
             });
         }
-        if limit_reached {
-            break;
-        }
-        if total >= MAX_LOG_BYTES {
-            limit_reached = true;
-            break;
-        }
-        if ended {
-            break;
-        }
     }
+    let after = reader
+        .get_ref()
+        .get_ref()
+        .metadata()
+        .map_err(|e| e.to_string())?;
+    check_file_snapshot(&metadata, &after, total).map_err(|e| e.to_string())?;
     Ok(LogHunt {
         sha256: format!("{:x}", hasher.finalize()),
         size_bytes: total,
@@ -121,19 +128,31 @@ pub fn inspect_log(path: &Path) -> Result<LogHunt, String> {
 }
 
 /// Reads at most one configured line chunk into memory while consuming an
-/// oversized line safely. Every consumed byte is bounded by the remaining file budget.
+/// oversized line safely. The underlying reader enforces the total byte budget.
 fn read_limited_line<R: BufRead>(
     reader: &mut R,
     line: &mut Vec<u8>,
     cap: usize,
-    remaining: u64,
     hasher: &mut Sha256,
+    deadline: Instant,
 ) -> io::Result<(usize, bool, bool)> {
     let mut consumed = 0usize;
     let mut oversized = false;
     let mut ended = false;
-    while (consumed as u64) < remaining {
+    loop {
+        let check_deadline = || {
+            if Instant::now() >= deadline {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "log inspection exceeded its time budget",
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        check_deadline()?;
         let buffer = reader.fill_buf()?;
+        check_deadline()?;
         if buffer.is_empty() {
             ended = true;
             break;
@@ -156,9 +175,6 @@ fn read_limited_line<R: BufRead>(
         if has_newline {
             break;
         }
-    }
-    if (consumed as u64) < remaining && reader.fill_buf()?.is_empty() {
-        ended = true;
     }
     Ok((consumed, oversized, ended))
 }
@@ -248,6 +264,43 @@ mod tests {
             1
         );
         fs::remove_file(path).unwrap();
+    }
+
+    fn inspect_fixture(bytes: &[u8], budget: u64) -> Result<LogHunt, String> {
+        let path = std::env::temp_dir().join(format!("cyberfeed-log-{}", uuid::Uuid::new_v4()));
+        fs::write(&path, bytes).unwrap();
+        let result = inspect_log_with_limit(&path, budget);
+        fs::remove_file(path).unwrap();
+        result
+    }
+
+    #[test]
+    fn tails_after_the_occurrence_limit_still_contribute_to_identity() {
+        let prefix = b"peer=192.0.2.10\n".repeat(MAX_OCCURRENCES + 1);
+        let mut digests = Vec::new();
+        for tail in [b"tail A", b"tail B"] {
+            let bytes = [prefix.as_slice(), tail].concat();
+            let hunt = inspect_fixture(&bytes, bytes.len() as u64).unwrap();
+            assert!(hunt.limit_reached);
+            assert_eq!(hunt.size_bytes, bytes.len() as u64);
+            assert_eq!(hunt.sha256, format!("{:x}", Sha256::digest(&bytes)));
+            digests.push(hunt.sha256);
+        }
+        assert_ne!(digests[0], digests[1]);
+    }
+
+    #[test]
+    fn skipped_lines_keep_later_provenance_and_full_hash_at_byte_boundary() {
+        let mut bytes = vec![b'x'; MAX_LINE_BYTES + 1];
+        bytes.extend_from_slice(b"\n\xff\npeer=example.test");
+        let size = bytes.len() as u64;
+        let hunt = inspect_fixture(&bytes, size).unwrap();
+        assert!(hunt.limit_reached);
+        assert_eq!(hunt.occurrences.len(), 1);
+        assert_eq!(hunt.occurrences[0].line_number, 3);
+        assert_eq!(hunt.sha256, format!("{:x}", Sha256::digest(&bytes)));
+        assert!(inspect_fixture(&bytes, size - 1).is_err());
+        assert!(!inspect_fixture(b"", 0).unwrap().limit_reached);
     }
 
     #[test]

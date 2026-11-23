@@ -3,8 +3,7 @@ use crate::indicator::{
     ClassificationFeedback, Indicator, IndicatorType, MANUAL_HASH_LENGTHS, classify_with_feedback,
 };
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, Cursor, Read};
 use std::path::Path;
 
 pub(super) const MAX_LIST_BYTES: u64 = 8 * 1024 * 1024;
@@ -65,13 +64,23 @@ impl Import {
 
 pub(super) fn import_path(path: &Path, result: &mut Import) -> std::io::Result<()> {
     let display = path.display().to_string();
-    let file = File::open(path)?;
-    if file.metadata()?.len() > MAX_LIST_BYTES {
+    let (file, metadata) = crate::file::open_regular_file(path)?;
+    if metadata.len() > MAX_LIST_BYTES {
         result.limited = true;
         result.files.push((display, 0));
         return Ok(());
     }
-    let mut reader = BufReader::new(file.take(MAX_LIST_BYTES + 1));
+    // Validate the bounded file snapshot before adding anything to the preview.
+    let mut bytes = Vec::new();
+    (&file).take(MAX_LIST_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_LIST_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "list grew past its size limit",
+        ));
+    }
+    crate::file::check_file_snapshot(&metadata, &file.metadata()?, bytes.len() as u64)?;
+    let mut reader = Cursor::new(bytes);
     let mut line = Vec::new();
     let mut line_number = 0;
     loop {
@@ -118,18 +127,12 @@ pub(super) fn import_path(path: &Path, result: &mut Import) -> std::io::Result<(
         }
     }
     result.files.push((display, line_number));
-    if reader.get_ref().limit() == 0 {
-        result.limited = true;
-    }
     Ok(())
 }
 
 /// Reads one line while storing at most `MAX_LINE_BYTES + 1`, draining an
 /// oversized line without allocating in proportion to untrusted input size.
-fn read_bounded_line(
-    reader: &mut BufReader<std::io::Take<File>>,
-    output: &mut Vec<u8>,
-) -> std::io::Result<bool> {
+fn read_bounded_line(reader: &mut impl BufRead, output: &mut Vec<u8>) -> std::io::Result<bool> {
     let mut oversized = false;
     loop {
         let available = reader.fill_buf()?;

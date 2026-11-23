@@ -18,15 +18,15 @@ Provider results describe the queried value, not necessarily the file it came fr
 
 ## Quick start
 
-Install stable Rust with Cargo, then run from a checkout:
+Install Rust 1.89 or later with Cargo, then run from a checkout:
 
 ```sh
 git clone https://github.com/Reon-1/Cyberfeed.git
 cd Cyberfeed
-cargo run
+cargo run --locked
 ```
 
-No credentials are needed for local file inspection, logs, the offline demo, or saved-report browsing. The main menu offers file investigation, the current session, log search, saved reports, and **More Tools**. Navigate with arrows or `j`/`k`, choose with Enter or a number, and use Esc to go back. In Saved Reports, `N`/`P` changes pages.
+No credentials are needed for local file inspection, logs, the offline demo, or saved-report browsing. The main menu offers file investigation, the current session, log search, saved reports, and **More Tools**. Navigate with arrows or `j`/`k`, choose with Enter or a number, and use Esc to go back. In Saved Reports, `N`/`P` changes pages. Use Page Up and Page Down in detailed evidence views.
 
 ## Provider setup
 
@@ -37,7 +37,7 @@ Threat lookups and live feeds are optional. Configure credentials in **More Tool
 | `ABUSECH_AUTH_KEY` | MalwareBazaar, ThreatFox, and URLhaus |
 | `CLOUDFLARE_API_TOKEN` | Cloudflare Radar |
 
-Credential entry is hidden. CyberFeed reports whether a credential is present but does not authenticate it during setup. The `.env` file stores saved credentials as plaintext; keep it private. Environment variables take precedence over `.env`; restart CyberFeed after changing credentials. `.env.example` contains placeholders only.
+Credential entry is hidden. CyberFeed reports whether a credential is present but does not authenticate it during setup. The app reads and edits only `.env` in the current working directory. The file stores saved credentials as plaintext; keep it private. Environment variables take precedence over `.env`; restart CyberFeed after changing credentials. `.env.example` contains placeholders only.
 
 CyberFeed routes only supported indicator types to each provider. URLhaus checks exact URLs, IP/domain hosts, and MD5/SHA-256 payload hashes; MalwareBazaar and ThreatFox have different supported types. Provider coverage and availability vary. No paid account is required by CyberFeed, though providers may apply their own access limits.
 
@@ -46,16 +46,16 @@ CyberFeed routes only supported indicator types to each provider. URLhaus checks
 1. Choose **Check a File**, enter a local path, review the file hash and extracted indicators, then open recorded provider details or save the report.
 2. Choose **Current Session → Check a Value** to examine a hash, address, domain, or full web address. CyberFeed shows provider coverage first; press `D` for technical evidence, then `0` to continue to the optional individual-check save prompt. Completed checks can also be saved together as a session report.
 3. Choose **Current Session → Compare Indicator Lists** to compare local lists and choose an indicator for a fresh provider lookup. This workflow does not persist the import queue or source-line provenance in a report; save the resulting value checks as ordinary session evidence.
-4. Choose **Search Logs** and enter a local text or JSONL path. The scan is bounded to 64 MiB total, 16 KiB per line, 1,000 unique indicators, and 10,000 occurrences. Results include source line and context; they do not trigger provider requests.
+4. Choose **Search Logs** and enter a local text or JSONL path. The scan is bounded to 64 MiB total, 16 KiB per line, 1,000 unique indicators, and 10,000 occurrences. Results include source line and context and are saved locally without provider requests. Evidence collection can stop early, but a saved log receives a SHA-256 only after the entire file is read within the limits. Older reports with a potentially partial digest remain readable and are excluded from same-file comparison and STIX export.
 5. Open **Saved Reports** to review file and session reports offline. File comparison requires matching file identity to compare the same contents; missing or failed provider coverage is inconclusive. A saved report can export eligible indicators as STIX 2.1.
 
-File investigation performs local extraction before bounded provider lookups. The inspection and sequential provider checks share a 60-second analysis budget; each provider request is also capped at 15 seconds. If the budget expires, completed evidence is retained and unfinished checks are marked as timed out or skipped. Authenticated requests do not follow redirects. Cloudflare Radar displays a request-in-progress state and each complete endpoint response when available; the endpoint does not stream individual rows.
+File investigation performs local extraction before bounded provider lookups. The inspection and sequential provider checks share a 60-second analysis budget; each provider request is also capped at 15 seconds. If the budget expires, completed evidence is retained and unfinished checks are marked as timed out or skipped. Authenticated requests do not follow redirects. Cloudflare Radar displays a request-in-progress state and each complete endpoint response when available; the endpoint does not stream individual rows. A failed refresh stops the automatic cycle and shows the last successful response as stale when available.
 
 ## Reports and privacy
 
-Reports are written under `reports/` in the current working directory. File reports and session reports remain separate: a file report records one file investigation, while a session report collects completed file and individual-value checks. Log-hunt reports also store source filenames, line numbers, indicators, and up to 240 characters of context per occurrence. Reports can expose secrets, usernames, internal addresses, filenames, hashes, and provider metadata; review them before sharing and protect the directory. Report loading is bounded and reports are read locally; malformed or unsupported files are surfaced as unavailable rather than treated as findings.
+Reports are written under `reports/` in the current working directory. File reports and session reports remain separate: a file report records one file investigation, while a session report collects completed file and individual-value checks. Log-hunt reports also store source filenames, line numbers, indicators, and up to 240 characters of context per occurrence. Reports can expose secrets, usernames, internal addresses, filenames, hashes, and provider metadata; review them before sharing and protect the directory. Saved Reports indexes up to 4,096 directory entries and 64 MiB of report JSON per visit. Each report is limited to 32 MiB and is opened separately when selected. Reports are read locally; malformed or unsupported files are surfaced as unavailable rather than treated as findings.
 
-Local inspection sends no file contents. A provider lookup sends its supported queried indicator and required authentication header; the provider also receives ordinary connection metadata. Feed requests send no local indicators. `FOUND` means a record matched, `NOT FOUND` means no record was returned at lookup time, and `ERROR`, `INVALID`, `UNSUPPORTED`, `NOT CONFIGURED`, and `SKIPPED` explain different unsuccessful or unattempted checks. None of these results proves a file is safe.
+Local inspection sends no file contents. With an abuse.ch key configured, file investigations ask before sending the file hash and supported indicators. Use Batch File Triage for local-only checks. A Value Search for a full URL asks for confirmation before sending it. Full URLs can contain credentials, internal paths, query parameters, or fragments. A provider lookup sends its supported queried indicator and required authentication header; the provider also receives ordinary connection metadata. Feed requests send no local indicators. `FOUND` means a record matched, `NOT FOUND` means no record was returned at lookup time, and `ERROR`, `INVALID`, `UNSUPPORTED`, `NOT CONFIGURED`, and `SKIPPED` explain different unsuccessful or unattempted checks. None of these results proves a file is safe.
 
 ## Project map
 
@@ -78,4 +78,4 @@ cargo doc --no-deps
 git diff --check
 ```
 
-The GitHub Actions workflow runs formatting, compilation, tests, and Clippy on stable Rust for Linux, macOS, and Windows. Only platforms actually exercised should be considered verified.
+The GitHub Actions workflow runs formatting, compilation, tests, and Clippy on stable Rust for Linux, macOS, and Windows. A separate Linux job checks the locked build with Rust 1.89. Only platforms actually exercised should be considered verified.

@@ -9,7 +9,6 @@ use std::collections::HashSet;
 pub struct Investigation {
     indicators: Vec<Indicator>,
     seen: HashSet<Indicator>,
-    provider_lookups: Vec<ProviderLookup>,
     checks: Vec<SessionCheck>,
 }
 
@@ -19,7 +18,6 @@ impl Investigation {
         Self {
             indicators: Vec::new(),
             seen: HashSet::new(),
-            provider_lookups: Vec::new(),
             checks: Vec::new(),
         }
     }
@@ -59,15 +57,18 @@ impl Investigation {
         }
     }
 
-    pub fn provider_lookups(&self) -> &[ProviderLookup] {
-        &self.provider_lookups
+    pub fn provider_lookups(&self) -> impl Iterator<Item = &ProviderLookup> {
+        self.checks.iter().flat_map(|check| match check {
+            SessionCheck::FileInvestigation { report } => &report.provider_lookups,
+            SessionCheck::IndicatorLookup {
+                provider_lookups, ..
+            } => provider_lookups,
+        })
     }
 
     pub fn add_file_investigation(&mut self, report: &InvestigationReport) {
         self.add_indicator(report.file.sha256.clone(), IndicatorType::Hash);
         self.add_indicators(report.local_inspection.indicators.clone());
-        self.provider_lookups
-            .extend(report.provider_lookups.iter().cloned());
         self.checks.push(SessionCheck::FileInvestigation {
             report: Box::new(report.clone()),
         });
@@ -79,8 +80,6 @@ impl Investigation {
         provider_lookups: &[ProviderLookup],
     ) {
         self.add_indicator(indicator.value.clone(), indicator.indicator_type);
-        self.provider_lookups
-            .extend(provider_lookups.iter().cloned());
         self.checks.push(SessionCheck::IndicatorLookup {
             indicator,
             provider_lookups: provider_lookups.to_vec(),

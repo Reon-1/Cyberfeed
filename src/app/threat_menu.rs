@@ -4,7 +4,8 @@ use super::provider_views::{
 use super::terminal::{self, InputEditor};
 use crate::investigation::Investigation;
 use crate::providers::cloudflare::{
-    fetch_cloudflare_attack_pairs, fetch_cloudflare_data, fetch_cloudflare_targets,
+    CloudflareError, TopAttackPairs, TopOrigins, TopTargets, fetch_cloudflare_attack_pairs,
+    fetch_cloudflare_data, fetch_cloudflare_targets,
 };
 use crate::providers::malwarebazaar::fetch_malware_data;
 use crate::tui;
@@ -82,7 +83,7 @@ fn malwarebazaar_menu(
                 Ok(data) => {
                     terminal::clear_screen();
                     investigation.add_indicators(display_malware_data(&data, None));
-                    terminal::pause();
+                    terminal::pause_evidence();
                 }
                 Err(error) => terminal::show_source_error(&error.to_string()),
             },
@@ -127,7 +128,7 @@ fn filter_malware_samples(
         Ok(data) => {
             terminal::clear_screen();
             investigation.add_indicators(display_malware_data(&data, Some(&country)));
-            terminal::pause();
+            terminal::pause_evidence();
         }
         Err(error) => terminal::show_source_error(&error.to_string()),
     }
@@ -167,95 +168,90 @@ fn cloudflare_menu(editor: &mut InputEditor, client: &Client, token: &str) {
     }
 }
 
+enum RadarRows {
+    Origins(TopOrigins),
+    Targets(TopTargets),
+    Pairs(TopAttackPairs),
+}
+
+impl RadarRows {
+    fn fetch(client: &Client, token: &str, feed: Feed) -> Result<Self, CloudflareError> {
+        match feed {
+            Feed::Origins => {
+                fetch_cloudflare_data(client, token).map(|data| Self::Origins(data.result))
+            }
+            Feed::Targets => {
+                fetch_cloudflare_targets(client, token).map(|data| Self::Targets(data.result))
+            }
+            Feed::Pairs => {
+                fetch_cloudflare_attack_pairs(client, token).map(|data| Self::Pairs(data.result))
+            }
+        }
+    }
+
+    fn display(&self) {
+        let empty = match self {
+            Self::Origins(rows) => rows.top_0.is_empty(),
+            Self::Targets(rows) => rows.top_0.is_empty(),
+            Self::Pairs(rows) => rows.top_0.is_empty(),
+        };
+        if empty {
+            tui::note("No rows returned.");
+            return;
+        }
+        match self {
+            Self::Origins(rows) => display_top_origins(rows),
+            Self::Targets(rows) => display_top_targets(rows),
+            Self::Pairs(rows) => display_top_attack_pairs(rows),
+        }
+    }
+}
+
 fn run_cloudflare_feed(editor: &mut InputEditor, client: &Client, token: &str, feed: Feed) {
     let Some(interval) = choose_refresh_interval(editor) else {
         return;
     };
 
     const MAX_REFRESHES: usize = 5;
-    for refresh in 0..MAX_REFRESHES {
+    let mut last_success: Option<RadarRows> = None;
+    for current in 1..=MAX_REFRESHES {
         terminal::clear_screen();
         tui::header("CLOUDFLARE RADAR", "Live internet attack trends");
-        show_refresh_progress(feed, refresh + 1, MAX_REFRESHES);
+        show_refresh_progress(feed, current, MAX_REFRESHES);
 
-        let succeeded = match feed {
-            Feed::Origins => match fetch_cloudflare_data(client, token) {
-                Ok(data) if data.success => {
-                    display_top_origins(&data.result);
-                    true
+        let fetched = RadarRows::fetch(client, token, feed);
+        terminal::clear_screen();
+        tui::header("CLOUDFLARE RADAR", "Live internet attack trends");
+        match fetched {
+            Ok(rows) => {
+                tui::status(
+                    "Refresh",
+                    &format!("{current}/{MAX_REFRESHES} complete"),
+                    tui::Status::Success,
+                );
+                if current < MAX_REFRESHES {
+                    tui::note(&format!(
+                        "Next refresh in {} · Esc/Q stops",
+                        terminal::format_duration(interval)
+                    ));
                 }
-                Ok(_) => {
-                    tui::error("Cloudflare returned an unsuccessful response.");
-                    false
+                rows.display();
+                last_success = Some(rows);
+            }
+            Err(error) => {
+                tui::error(&format!("{error} Automatic refresh stopped."));
+                if let Some(rows) = &last_success {
+                    tui::warning("Stale · showing the last successful refresh");
+                    rows.display();
                 }
-                Err(error) => {
-                    tui::error("Cloudflare request failed.");
-                    tui::field("Details", error);
-                    false
-                }
-            },
-            Feed::Targets => match fetch_cloudflare_targets(client, token) {
-                Ok(data) if data.success => {
-                    display_top_targets(&data.result);
-                    true
-                }
-                Ok(_) => {
-                    tui::error("Cloudflare returned an unsuccessful response.");
-                    false
-                }
-                Err(error) => {
-                    tui::error("Cloudflare request failed.");
-                    tui::field("Details", error);
-                    false
-                }
-            },
-            Feed::Pairs => match fetch_cloudflare_attack_pairs(client, token) {
-                Ok(data) if data.success => {
-                    display_top_attack_pairs(&data.result);
-                    true
-                }
-                Ok(_) => {
-                    tui::error("Cloudflare returned an unsuccessful response.");
-                    false
-                }
-                Err(error) => {
-                    tui::error("Cloudflare request failed.");
-                    tui::field("Details", error);
-                    false
-                }
-            },
-        };
-        tui::status(
-            "Refresh",
-            if succeeded {
-                "Complete"
-            } else {
-                "Failed · see details"
-            },
-            if succeeded {
-                tui::Status::Success
-            } else {
-                tui::Status::Error
-            },
-        );
-        tui::redraw_current_screen();
-
-        tui::box_line("");
-        tui::divider();
-        let current = refresh + 1;
-        if current < MAX_REFRESHES {
-            tui::box_line(&format!(
-                "Refresh {current}/{MAX_REFRESHES} • Next update in {}",
-                terminal::format_duration(interval)
-            ));
-            tui::box_line("Esc / q stops automatic refresh after this response completes");
-            tui::redraw_current_screen();
-            if terminal::wait_for_refresh(interval) {
+                terminal::pause_evidence();
                 return;
             }
-        } else {
-            tui::box_line("Refresh limit reached");
-            terminal::pause();
+        }
+        if current == MAX_REFRESHES {
+            terminal::pause_evidence();
+        } else if terminal::wait_for_refresh(interval) {
+            return;
         }
     }
 }

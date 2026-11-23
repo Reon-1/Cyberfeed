@@ -9,13 +9,8 @@ mod threat_menu;
 use crate::config::Config;
 use reqwest::blocking::Client;
 
-pub fn run(client: &Client, config: &Config) {
-    let _terminal = match crate::tui::TerminalSession::new() {
-        Ok(terminal) => terminal,
-        Err(error) => {
-            eprintln!("Could not initialize the terminal UI: {error}");
-            return;
-        }
-    };
+pub fn run(client: &Client, config: &Config) -> std::io::Result<()> {
+    let _terminal = crate::tui::TerminalSession::new()?;
     menu::run(client, config);
+    Ok(())
 }

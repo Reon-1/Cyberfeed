@@ -1,3 +1,31 @@
+#[cfg(unix)]
+#[test]
+fn named_pipe_is_rejected_before_opening() {
+    let dir = std::env::temp_dir().join(format!("cyberfeed-fifo-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let pipe = dir.join("input");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap()
+            .success()
+    );
+    // Keep the pipe open so even a regression to a blocking open cannot
+    // hang the test. No data is sent.
+    use std::os::unix::fs::OpenOptionsExt;
+    let guard = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&pipe)
+        .unwrap();
+    let result = super::open_regular_file(&pipe);
+    drop(guard);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+}
+
 use super::{
     MAX_EXTRACTED_INDICATORS, TextScanner, decode_file_uri, inspect_file, normalize_user_path,
 };

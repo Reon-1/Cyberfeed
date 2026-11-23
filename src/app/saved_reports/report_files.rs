@@ -1,6 +1,7 @@
 //! Read-only discovery and schema validation for saved JSON reports.
 use crate::report::{
-    InvestigationReport, MAX_SAVED_REPORT_BYTES, SCHEMA_VERSION, SESSION_REPORT_TYPE, SessionReport,
+    InvestigationReport, MAX_SAVED_REPORT_BYTES, SCHEMA_VERSION, SESSION_REPORT_TYPE, SessionCheck,
+    SessionReport,
 };
 use serde_json::Value;
 use std::fs;
@@ -40,20 +41,94 @@ impl SavedReportContents {
     }
 }
 
-pub(super) struct ReportCollection {
-    pub(super) reports: Vec<SavedReport>,
+pub(super) struct ReportCollection<T> {
+    pub(super) reports: Vec<T>,
     pub(super) unavailable: Vec<String>,
+}
+
+pub(super) struct ReportIndexEntry {
+    pub(super) path: PathBuf,
+    pub(super) timestamp: u64,
+    pub(super) title: String,
+    pub(super) description: String,
+}
+
+const MAX_DIRECTORY_ENTRIES: usize = 4096;
+const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
+
+pub(super) fn index(directory: &Path) -> io::Result<ReportCollection<ReportIndexEntry>> {
+    discover_with(
+        directory,
+        |saved| {
+            let timestamp = saved.contents.generated_at_unix_seconds();
+            let (title, description) = super::view::report_list_labels(&saved);
+            ReportIndexEntry {
+                path: saved.path,
+                timestamp,
+                title,
+                description,
+            }
+        },
+        |entry| entry.timestamp,
+    )
+}
+
+pub(super) fn open_report(path: &Path) -> Result<SavedReport, String> {
+    Ok(SavedReport {
+        path: path.to_owned(),
+        contents: load_one(path)?,
+    })
+}
+
+impl ReportCollection<ReportIndexEntry> {
+    pub(super) fn comparison_reports(&self) -> ReportCollection<SavedReport> {
+        let mut bytes_left = MAX_ARCHIVE_BYTES;
+        let mut collection = ReportCollection {
+            reports: Vec::new(),
+            unavailable: Vec::new(),
+        };
+        for entry in &self.reports {
+            match load_with_budget(&entry.path, &mut bytes_left) {
+                Ok(contents) => collection.reports.push(SavedReport {
+                    path: entry.path.clone(),
+                    contents,
+                }),
+                Err(error) => collection
+                    .unavailable
+                    .push(format!("{}: {error}", entry.path.display())),
+            }
+        }
+        collection
+    }
+}
+
+#[cfg(test)]
+pub(super) fn discover(directory: &Path) -> io::Result<ReportCollection<SavedReport>> {
+    discover_with(
+        directory,
+        |saved| saved,
+        |saved| saved.contents.generated_at_unix_seconds(),
+    )
 }
 
 /// Directory errors are separate from per-file errors so one damaged report
 /// does not prevent valid neighboring reports from loading.
-pub(super) fn discover(directory: &Path) -> io::Result<ReportCollection> {
+fn discover_with<T>(
+    directory: &Path,
+    project: impl Fn(SavedReport) -> T,
+    timestamp: impl Fn(&T) -> u64,
+) -> io::Result<ReportCollection<T>> {
     let entries = fs::read_dir(directory)?;
     let mut collection = ReportCollection {
         reports: Vec::new(),
         unavailable: Vec::new(),
     };
-    for entry in entries {
+    let mut bytes_left = MAX_ARCHIVE_BYTES;
+    for (index, entry) in entries.enumerate() {
+        if index >= MAX_DIRECTORY_ENTRIES || bytes_left == 0 {
+            collection.unavailable.push("Archive scan limit reached. Move older reports to another directory to browse them.".into());
+            break;
+        }
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
@@ -75,33 +150,49 @@ pub(super) fn discover(directory: &Path) -> io::Result<ReportCollection> {
                 continue;
             }
         }
-        match load_one(&path) {
-            Ok(contents) => collection.reports.push(SavedReport { path, contents }),
+        match load_with_budget(&path, &mut bytes_left) {
+            Ok(contents) => collection
+                .reports
+                .push(project(SavedReport { path, contents })),
             Err(error) => collection
                 .unavailable
                 .push(format!("{}: {error}", path.display())),
         }
     }
-    collection.reports.sort_by(|left, right| {
-        right
-            .contents
-            .generated_at_unix_seconds()
-            .cmp(&left.contents.generated_at_unix_seconds())
-    });
+    collection
+        .reports
+        .sort_by_key(|report| std::cmp::Reverse(timestamp(report)));
     Ok(collection)
 }
 
 fn load_one(path: &Path) -> Result<SavedReportContents, String> {
-    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
-    if file.metadata().map_err(|error| error.to_string())?.len() > MAX_SAVED_REPORT_BYTES {
+    load_with_budget(path, &mut (MAX_SAVED_REPORT_BYTES + 1))
+}
+
+fn load_with_budget(path: &Path, bytes_left: &mut u64) -> Result<SavedReportContents, String> {
+    let (mut file, metadata) =
+        crate::file::open_regular_file(path).map_err(|error| error.to_string())?;
+    if metadata.len() > MAX_SAVED_REPORT_BYTES {
         return Err("report exceeds the 32 MiB saved-report size limit".into());
     }
     // Read one byte past the cap so growth after metadata() is detected while
     // allocation remains bounded.
+    let limit = *bytes_left;
+    if metadata.len() > limit {
+        return Err("report exceeds the remaining archive scan budget".into());
+    }
     let mut bytes = Vec::new();
-    file.by_ref()
-        .take(MAX_SAVED_REPORT_BYTES + 1)
-        .read_to_end(&mut bytes)
+    let read_result = file
+        .by_ref()
+        .take((MAX_SAVED_REPORT_BYTES + 1).min(limit.saturating_add(1)))
+        .read_to_end(&mut bytes);
+    *bytes_left = bytes_left.saturating_sub(bytes.len() as u64);
+    read_result.map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > limit {
+        return Err("report exceeds the remaining archive scan budget".into());
+    }
+    let after = file.metadata().map_err(|error| error.to_string())?;
+    crate::file::check_file_snapshot(&metadata, &after, bytes.len() as u64)
         .map_err(|error| error.to_string())?;
     if bytes.len() as u64 > MAX_SAVED_REPORT_BYTES {
         return Err("report exceeds the 32 MiB saved-report size limit".into());
@@ -123,18 +214,22 @@ fn load_one(path: &Path) -> Result<SavedReportContents, String> {
         if report.checks.is_empty() {
             return Err("session report contains no completed checks".into());
         }
-        if version < u64::from(SCHEMA_VERSION) {
-            report.schema_version = SCHEMA_VERSION;
+        for check in &mut report.checks {
+            if let SessionCheck::FileInvestigation { report } = check {
+                if !(1..=SCHEMA_VERSION).contains(&report.schema_version) {
+                    return Err("unsupported nested file report schema version".into());
+                }
+                report.upgrade_legacy();
+            }
         }
+        report.schema_version = SCHEMA_VERSION;
         return Ok(SavedReportContents::Session(report));
     }
     let mut report: InvestigationReport =
         serde_json::from_value(value).map_err(|error| error.to_string())?;
     // Earlier report schemas remain readable; the in-memory model uses the
     // current version while preserving the fields those versions contained.
-    if version < u64::from(SCHEMA_VERSION) {
-        report.schema_version = SCHEMA_VERSION;
-    }
+    report.upgrade_legacy();
     Ok(SavedReportContents::File(Box::new(report)))
 }
 
@@ -540,6 +635,50 @@ mod tests {
         let report = loaded.reports[0].contents.file_report().unwrap();
         assert_eq!(report.schema_version, SCHEMA_VERSION);
         assert_eq!(report.file.sha256, "file-sha");
+    }
+
+    #[test]
+    fn legacy_truncated_identity_survives_schema_upgrade_and_blocks_export() {
+        let dir = TestDir::new();
+        let mut old = report();
+        old.schema_version = 5;
+        old.provider_lookups.clear();
+        fs::write(
+            dir.0.join("legacy-log.json"),
+            serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
+        let saved = open_report(&dir.0.join("legacy-log.json")).unwrap();
+        let loaded = saved.contents.file_report().unwrap();
+        assert_eq!(loaded.schema_version, SCHEMA_VERSION);
+        assert!(loaded.identity_incomplete());
+        assert!(loaded.to_markdown().contains("incomplete file identity"));
+        assert_eq!(crate::report::stix_indicator_count(loaded), 0);
+        assert!(crate::report::save_stix_bundle(loaded, &dir.0.join("stix")).is_err());
+        assert!(!super::super::comparison::compare(loaded, loaded).same_subject);
+        old.schema_version = SCHEMA_VERSION;
+        assert!(!old.identity_incomplete());
+    }
+
+    #[test]
+    fn index_keeps_metadata_and_only_reopens_selected_report() {
+        let dir = TestDir::new();
+        write_report(&dir.0, "older.json", 1);
+        write_report(&dir.0, "newer.json", 2);
+        fs::write(dir.0.join("broken.json"), b"{").unwrap();
+        let indexed = index(&dir.0).unwrap();
+        assert_eq!(indexed.reports.len(), 2);
+        assert_eq!(indexed.unavailable.len(), 1);
+        assert_eq!(indexed.reports[0].timestamp, 2);
+        fs::remove_file(&indexed.reports[1].path).unwrap();
+        assert_eq!(indexed.reports[1].timestamp, 1);
+        assert!(open_report(&indexed.reports[0].path).is_ok());
+        let loaded = indexed.comparison_reports();
+        assert_eq!(loaded.reports.len(), 1);
+        assert_eq!(loaded.unavailable.len(), 1);
+        let mut tiny_budget = 1;
+        assert!(load_with_budget(&indexed.reports[0].path, &mut tiny_budget).is_err());
+        assert_eq!(tiny_budget, 1);
     }
 
     #[test]

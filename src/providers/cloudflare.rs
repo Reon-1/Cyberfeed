@@ -2,7 +2,6 @@ use reqwest::blocking::Client;
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 use std::fmt;
-use std::io::Read;
 use std::time::Duration;
 
 use crate::http_response::{BoundedReadError, read_bounded};
@@ -86,14 +85,17 @@ pub struct TopAttackPairs {
 
 #[derive(Deserialize)]
 pub struct CloudflareResponse<T> {
-    pub success: bool,
     pub result: T,
 }
 
 #[derive(Debug)]
 pub enum CloudflareError {
     Request(String),
-    Http { status: u16, body: String },
+    Http {
+        status: u16,
+        retry_after_seconds: Option<u64>,
+    },
+    Rejected,
     Parse(String),
 }
 
@@ -101,9 +103,28 @@ impl fmt::Display for CloudflareError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Request(message) => write!(formatter, "Cloudflare request failed: {message}"),
-            Self::Http { status, body } => {
-                write!(formatter, "Cloudflare returned HTTP {status}: {body}")
+            Self::Http {
+                status: 401 | 403, ..
+            } => write!(
+                formatter,
+                "Cloudflare rejected the credential or its permissions."
+            ),
+            Self::Http {
+                status: 429,
+                retry_after_seconds,
+            } => {
+                write!(formatter, "Cloudflare rate limited the request (HTTP 429).")?;
+                if let Some(seconds) = retry_after_seconds {
+                    write!(
+                        formatter,
+                        " Wait at least {seconds} seconds before retrying."
+                    )
+                } else {
+                    write!(formatter, " Wait before retrying.")
+                }
             }
+            Self::Http { status, .. } => write!(formatter, "Cloudflare returned HTTP {status}."),
+            Self::Rejected => write!(formatter, "Cloudflare rejected the feed query."),
             Self::Parse(message) => {
                 write!(formatter, "Could not parse Cloudflare response: {message}")
             }
@@ -173,10 +194,14 @@ fn fetch_json<T: for<'de> serde::Deserialize<'de>>(
         })?;
     let status = response.status();
     if !status.is_success() {
-        let body = redact(&read_error_body(response), token);
+        let retry_after_seconds = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|text| text.parse().ok());
         return Err(CloudflareError::Http {
             status: status.as_u16(),
-            body,
+            retry_after_seconds,
         });
     }
 
@@ -189,7 +214,22 @@ fn fetch_json<T: for<'de> serde::Deserialize<'de>>(
             CloudflareError::Parse(format!("response exceeded the {limit}-byte size limit"))
         }
     })?;
-    serde_json::from_slice(&bytes).map_err(|error| CloudflareError::Parse(error.to_string()))
+    parse_feed_response(&bytes)
+}
+
+fn parse_feed_response<T: for<'de> serde::Deserialize<'de>>(
+    bytes: &[u8],
+) -> Result<CloudflareResponse<T>, CloudflareError> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|_| CloudflareError::Parse("invalid response JSON".into()))?;
+    match value.get("success").and_then(serde_json::Value::as_bool) {
+        Some(false) => Err(CloudflareError::Rejected),
+        Some(true) => serde_json::from_value(value)
+            .map_err(|_| CloudflareError::Parse("invalid feed result".into())),
+        None => Err(CloudflareError::Parse(
+            "missing or invalid success flag".into(),
+        )),
+    }
 }
 
 fn redact(message: &str, token: &str) -> String {
@@ -198,22 +238,6 @@ fn redact(message: &str, token: &str) -> String {
     } else {
         message.replace(token, "[redacted]")
     }
-}
-
-fn read_error_body(response: reqwest::blocking::Response) -> String {
-    const MAX_BYTES: u64 = 2048;
-    let mut limited = response.take(MAX_BYTES + 1);
-    let mut bytes = Vec::new();
-    if let Err(error) = limited.read_to_end(&mut bytes) {
-        return format!("could not read response body: {error}");
-    }
-    let truncated = bytes.len() as u64 > MAX_BYTES;
-    bytes.truncate(MAX_BYTES as usize);
-    let mut result = String::from_utf8_lossy(&bytes).into_owned();
-    if truncated {
-        result.push_str("… [truncated]");
-    }
-    result
 }
 
 #[cfg(test)]
@@ -225,6 +249,81 @@ mod tests {
         assert_eq!(
             redact("remote echoed private-token", "private-token"),
             "remote echoed [redacted]"
+        );
+    }
+
+    #[test]
+    fn mock_http_rate_limit_keeps_retry_guidance_without_echoing_body() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("local mock could not accept request: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                request.extend_from_slice(&byte);
+            }
+            let body = "dummy-token";
+            write!(stream, "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 42\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let result =
+            super::fetch_json::<TopOrigins>(&client, &format!("http://{address}"), "dummy-token");
+        server.join().unwrap();
+        let Err(error) = result else {
+            panic!("expected HTTP error")
+        };
+        assert!(matches!(
+            error,
+            super::CloudflareError::Http {
+                status: 429,
+                retry_after_seconds: Some(42)
+            }
+        ));
+        assert!(error.to_string().contains("42 seconds"));
+        assert!(!error.to_string().contains("dummy-token"));
+    }
+
+    #[test]
+    fn radar_distinguishes_rejected_missing_and_empty_payloads() {
+        assert!(matches!(
+            super::parse_feed_response::<TopOrigins>(br#"{"success":false,"result":{"top_0":[]}}"#),
+            Err(super::CloudflareError::Rejected)
+        ));
+        assert!(matches!(
+            super::parse_feed_response::<TopOrigins>(br#"{"success":true}"#),
+            Err(super::CloudflareError::Parse(_))
+        ));
+        assert!(
+            super::parse_feed_response::<TopOrigins>(br#"{"success":true,"result":{"top_0":[]}}"#)
+                .unwrap()
+                .result
+                .top_0
+                .is_empty()
         );
     }
 

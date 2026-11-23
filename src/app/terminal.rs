@@ -5,8 +5,8 @@ use crossterm::execute;
 use crossterm::terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode};
 use rustyline::completion::FilenameCompleter;
 use std::io::{self, Write};
-use std::thread::sleep;
 use std::time::{Duration, Instant};
+use unicode_segmentation::UnicodeSegmentation;
 
 pub(super) struct InputEditor {
     history: Vec<String>,
@@ -117,6 +117,28 @@ pub(super) fn read_input(
     prompt: &str,
     path_completion: bool,
 ) -> Option<String> {
+    read_input_inner(editor, prompt, path_completion, None)
+}
+
+pub(super) fn read_evidence(editor: &mut InputEditor, prompt: &str) -> Option<String> {
+    read_input_inner(
+        editor,
+        prompt,
+        false,
+        Some(tui::terminal::EvidenceScroll::default()),
+    )
+}
+
+pub(super) fn pause_evidence() {
+    let _ = read_evidence(&mut InputEditor::default(), "Enter to return: ");
+}
+
+fn read_input_inner(
+    editor: &mut InputEditor,
+    prompt: &str,
+    path_completion: bool,
+    mut scroll: Option<tui::terminal::EvidenceScroll>,
+) -> Option<String> {
     let _raw_mode = match RawMode::enable() {
         Ok(raw_mode) => raw_mode,
         Err(error) => {
@@ -130,7 +152,13 @@ pub(super) fn read_input(
     let mut completion_choices = Vec::new();
     let mut pending_event = None;
     editor.history_index = None;
-    redraw_screen(&prompt, &input, cursor_index, &completion_choices);
+    redraw_screen(
+        &prompt,
+        &input,
+        cursor_index,
+        &completion_choices,
+        scroll.as_mut(),
+    );
 
     loop {
         let event = if let Some(event) = pending_event.take() {
@@ -149,7 +177,13 @@ pub(super) fn read_input(
                 if let Some(event) = coalesce_resize_events() {
                     pending_event = Some(event);
                 }
-                redraw_screen(&prompt, &input, cursor_index, &completion_choices);
+                redraw_screen(
+                    &prompt,
+                    &input,
+                    cursor_index,
+                    &completion_choices,
+                    scroll.as_mut(),
+                );
             }
             Some(Event::Key(key))
                 if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
@@ -168,6 +202,12 @@ pub(super) fn read_input(
                 }
                 let had_completion_choices = !completion_choices.is_empty();
                 match key.code {
+                    KeyCode::PageUp | KeyCode::PageDown if scroll.is_some() => {
+                        if let Some(scroll) = scroll.as_mut() {
+                            scroll.move_page(key.code == KeyCode::PageDown);
+                            tui::redraw_evidence(scroll, true);
+                        }
+                    }
                     KeyCode::Enter | KeyCode::Esc => unreachable!("handled above"),
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         return None;
@@ -235,20 +275,16 @@ pub(super) fn read_input(
                         cursor_index += 1;
                     }
                     KeyCode::Backspace if cursor_index > 0 => {
-                        let mut chars = input.chars().collect::<Vec<_>>();
-                        chars.remove(cursor_index - 1);
-                        input = chars.into_iter().collect();
-                        cursor_index -= 1;
+                        let start = grapheme_cursor(&input, cursor_index, false);
+                        remove_input_range(&mut input, start, cursor_index);
+                        cursor_index = start;
                     }
                     KeyCode::Delete => {
-                        let mut chars = input.chars().collect::<Vec<_>>();
-                        if cursor_index < chars.len() {
-                            chars.remove(cursor_index);
-                        }
-                        input = chars.into_iter().collect();
+                        let end = grapheme_cursor(&input, cursor_index, true);
+                        remove_input_range(&mut input, cursor_index, end);
                     }
-                    KeyCode::Left => cursor_index = cursor_index.saturating_sub(1),
-                    KeyCode::Right => cursor_index = (cursor_index + 1).min(input.chars().count()),
+                    KeyCode::Left => cursor_index = grapheme_cursor(&input, cursor_index, false),
+                    KeyCode::Right => cursor_index = grapheme_cursor(&input, cursor_index, true),
                     KeyCode::Home => cursor_index = 0,
                     KeyCode::End => cursor_index = input.chars().count(),
                     KeyCode::Up => history_move(editor, -1, &mut input, &mut cursor_index),
@@ -302,9 +338,19 @@ fn history_move(
     *cursor = input.chars().count();
 }
 
-fn redraw_screen(prompt: &str, input: &str, cursor_index: usize, completion_choices: &[String]) {
+fn redraw_screen(
+    prompt: &str,
+    input: &str,
+    cursor_index: usize,
+    completion_choices: &[String],
+    scroll: Option<&mut tui::terminal::EvidenceScroll>,
+) {
     tui::clear_terminal();
-    tui::redraw_current_screen_with_prompt();
+    if let Some(scroll) = scroll {
+        tui::redraw_evidence(scroll, true);
+    } else {
+        tui::redraw_current_screen_with_prompt();
+    }
     redraw_prompt(prompt, input, cursor_index, completion_choices, false);
 }
 
@@ -341,11 +387,8 @@ fn redraw_prompt(
             Clear(ClearType::CurrentLine)
         );
     }
-    let prompt = tui::align_prompt(prompt);
-    let prompt = prompt.rsplit('\n').next().unwrap_or(&prompt);
-    let prompt_width = tui::visible_width(prompt).min(columns.saturating_sub(1));
-    let available = columns.saturating_sub(prompt_width);
-    let (shown, cursor_offset) = input_window(input, cursor_index, available);
+    let (prompt, shown, prompt_width, cursor_offset) =
+        prompt_window(prompt, input, cursor_index, columns);
     let _ = execute!(
         stdout,
         cursor::MoveTo(0, row),
@@ -370,33 +413,75 @@ fn prompt_row(terminal_rows: usize) -> usize {
     terminal_rows.saturating_sub(1)
 }
 
+fn prompt_window(
+    prompt: &str,
+    input: &str,
+    cursor: usize,
+    columns: usize,
+) -> (String, String, usize, usize) {
+    let prompt = tui::align_prompt(prompt);
+    let prompt = prompt.rsplit('\n').next().unwrap_or(&prompt);
+    let usable = columns.saturating_sub(1);
+    let input_reserve = (usable / 3).clamp(1, 8);
+    let (label, _) = input_window(prompt, 0, usable.saturating_sub(input_reserve));
+    let label_width = tui::visible_width(&label);
+    let (shown, cursor_offset) = input_window(input, cursor, usable.saturating_sub(label_width));
+    (label, shown, label_width, cursor_offset)
+}
+
+fn input_byte(input: &str, cursor: usize) -> usize {
+    input
+        .char_indices()
+        .nth(cursor)
+        .map_or(input.len(), |(byte, _)| byte)
+}
+
+fn remove_input_range(input: &mut String, start: usize, end: usize) {
+    input.replace_range(input_byte(input, start)..input_byte(input, end), "");
+}
+
+fn grapheme_cursor(input: &str, cursor: usize, forward: bool) -> usize {
+    let mut position = 0;
+    for grapheme in input.graphemes(true) {
+        let next = position + grapheme.chars().count();
+        if cursor < next || (!forward && cursor == next) {
+            return if forward { next } else { position };
+        }
+        position = next;
+    }
+    position
+}
+
 fn input_window(input: &str, cursor_index: usize, width: usize) -> (String, usize) {
-    let chars = input.chars().collect::<Vec<_>>();
-    let cursor_index = cursor_index.min(chars.len());
     if width == 0 {
         return (String::new(), 0);
     }
-    let mut start = cursor_index;
-    let mut left_width = 0;
-    while start > 0 {
-        let next = tui::display_width(chars[start - 1]);
-        if left_width + next > width {
-            break;
-        }
+    let safe: String = input
+        .chars()
+        .map(|c| if c.is_control() { '�' } else { c })
+        .collect();
+    let cursor_byte = input_byte(&safe, cursor_index);
+    // If insertion joined adjacent graphemes, place the visible cursor at
+    // the next cluster boundary.
+    let cells: Vec<_> = safe
+        .grapheme_indices(true)
+        .map(|(index, cluster)| (index, tui::visible_width(cluster)))
+        .collect();
+    let cursor = cells.partition_point(|&(index, _)| index < cursor_byte);
+    let mut start = cursor;
+    let mut used = 0;
+    while start > 0 && used + cells[start - 1].1 <= width {
         start -= 1;
-        left_width += next;
+        used += cells[start].1;
     }
-    let mut end = cursor_index;
-    let mut used = left_width;
-    while end < chars.len() {
-        let next = tui::display_width(chars[end]);
-        if used + next > width {
-            break;
-        }
-        used += next;
+    let left_width = used;
+    let mut end = cursor;
+    while end < cells.len() && used + cells[end].1 <= width {
+        used += cells[end].1;
         end += 1;
     }
-    (chars[start..end].iter().collect(), left_width)
+    let byte = |index| cells.get(index).map_or(safe.len(), |&(byte, _)| byte);
+    (safe[byte(start)..byte(end)].to_owned(), left_width)
 }
 
 fn coalesce_resize_events() -> Option<Event> {
@@ -478,12 +563,13 @@ pub(super) fn wait_for_refresh(interval: Duration) -> bool {
         Ok(raw_mode) => raw_mode,
         Err(error) => {
             eprintln!("Could not enable terminal refresh controls: {error}");
-            sleep(interval);
-            return false;
+            return true;
         }
     };
 
     let start = Instant::now();
+    let mut scroll = tui::terminal::EvidenceScroll::default();
+    tui::redraw_evidence(&mut scroll, false);
     loop {
         let Some(remaining) = interval.checked_sub(start.elapsed()) else {
             break false;
@@ -496,21 +582,25 @@ pub(super) fn wait_for_refresh(interval: Duration) -> bool {
                 {
                     break true;
                 }
+                Ok(Event::Key(key)) if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) => {
+                    scroll.move_page(key.code == KeyCode::PageDown);
+                    tui::redraw_evidence(&mut scroll, false);
+                }
                 Ok(Event::Resize(_, _)) => {
                     let mut stdout = io::stdout();
                     let _ = execute!(stdout, Clear(ClearType::All), cursor::MoveTo(0, 0));
-                    tui::redraw_current_screen();
+                    tui::redraw_evidence(&mut scroll, false);
                 }
                 Ok(_) => {}
                 Err(error) => {
                     eprintln!("Could not read refresh key: {error}");
-                    break false;
+                    break true;
                 }
             },
             Ok(false) => {}
             Err(error) => {
                 eprintln!("Could not wait for refresh key: {error}");
-                break false;
+                break true;
             }
         }
     }
@@ -577,6 +667,30 @@ mod tests {
         assert!(wide.contains(input));
         assert!(narrow_cursor <= 8);
         assert_eq!(wide_cursor, cursor);
+    }
+
+    #[test]
+    fn prompt_shows_control_placeholders_without_changing_path() {
+        let path = "界é\u{7}\nname";
+        let (displayed, width) = input_window(path, 5, 20);
+        assert_eq!(displayed, "界é��name");
+        assert_eq!(width, 5);
+        assert_eq!(path, "界é\u{7}\nname");
+        assert!(displayed.chars().all(|c| !c.is_control()));
+        let emoji = "a👩‍💻z";
+        assert_eq!(input_window(emoji, 4, 3), ("a👩‍💻".into(), 3));
+        assert_eq!(super::grapheme_cursor(emoji, 4, false), 1);
+        assert_eq!(super::grapheme_cursor(emoji, 1, true), 4);
+    }
+
+    #[test]
+    fn long_prompt_leaves_room_for_input_at_narrow_width() {
+        let (label, shown, label_width, cursor) =
+            super::prompt_window("S export STIX · Enter return: ", "s", 1, 20);
+        assert!(label.starts_with("S export STIX"));
+        assert_eq!(shown, "s");
+        assert_eq!(cursor, 1);
+        assert!(label_width + cursor < 20);
     }
 
     #[test]

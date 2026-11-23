@@ -1,6 +1,6 @@
 //! Terminal rendering and display formatting for saved report data.
 use super::comparison::{self, ReportComparison};
-use super::report_files::{ReportCollection, SavedReport, SavedReportContents};
+use super::report_files::{ReportCollection, ReportIndexEntry, SavedReport, SavedReportContents};
 use crate::report::{
     InvestigationReport, LookupOutcome, LookupSubject, SessionCheck, SessionReport,
 };
@@ -10,7 +10,11 @@ pub(super) fn report_page_capacity(rows: usize) -> usize {
     rows.saturating_sub(16).checked_div(2).unwrap_or(0).max(1)
 }
 
-pub(super) fn report_list(collection: &ReportCollection, start: usize, page_size: usize) {
+pub(super) fn report_list(
+    collection: &ReportCollection<ReportIndexEntry>,
+    start: usize,
+    page_size: usize,
+) {
     tui::menu_item(
         "C",
         "Compare Same-File Reports",
@@ -21,6 +25,7 @@ pub(super) fn report_list(collection: &ReportCollection, start: usize, page_size
         "Compare Indicator Checks",
         "Compare recorded hash, IP, or domain lookups offline",
     );
+    tui::note("N/P page · 0 back");
     if collection.reports.is_empty() {
         tui::section("NO VALID REPORTS");
         tui::box_line("No readable JSON investigation reports were found in reports/.");
@@ -37,35 +42,11 @@ pub(super) fn report_list(collection: &ReportCollection, start: usize, page_size
             .skip(start)
             .take(page_size)
         {
-            let name = saved
-                .path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("(unprintable filename)");
-            match &saved.contents {
-                SavedReportContents::File(report) => {
-                    tui::menu_item(
-                        &(index - start + 1).to_string(),
-                        &format!("File · {}", terminal_safe(&report.file.filename)),
-                        &terminal_safe(&format!(
-                            "{} · {}",
-                            format_timestamp(report.generated_at_unix_seconds),
-                            file_report_status_summary(report)
-                        )),
-                    );
-                }
-                SavedReportContents::Session(report) => {
-                    tui::menu_item(
-                        &(index - start + 1).to_string(),
-                        &format!("Session · {}", terminal_safe(name)),
-                        &terminal_safe(&format!(
-                            "{} completed check(s) · {}",
-                            report.checks.len(),
-                            format_timestamp(report.generated_at_unix_seconds)
-                        )),
-                    );
-                }
-            }
+            tui::menu_item(
+                &(index - start + 1).to_string(),
+                &saved.title,
+                &saved.description,
+            );
         }
     }
     if !collection.unavailable.is_empty() {
@@ -86,6 +67,36 @@ pub(super) fn report_list(collection: &ReportCollection, start: usize, page_size
     tui::navigation_footer("0", "Return to the main menu");
 }
 
+pub(super) fn report_list_labels(saved: &SavedReport) -> (String, String) {
+    match &saved.contents {
+        SavedReportContents::File(report) => (
+            format!(
+                "File · {}",
+                terminal_safe(&report.file.filename)
+                    .chars()
+                    .take(160)
+                    .collect::<String>()
+            ),
+            format!(
+                "{} · {}",
+                format_timestamp(report.generated_at_unix_seconds),
+                file_report_status_summary(report)
+            ),
+        ),
+        SavedReportContents::Session(report) => (
+            format!(
+                "Session · {}",
+                terminal_safe(&saved.path.file_name().unwrap_or_default().to_string_lossy())
+            ),
+            format!(
+                "{} completed check(s) · {}",
+                report.checks.len(),
+                format_timestamp(report.generated_at_unix_seconds)
+            ),
+        ),
+    }
+}
+
 fn file_report_status_summary(report: &InvestigationReport) -> String {
     if report.provider_lookups.is_empty() {
         return "Local inspection only · no provider checks recorded".into();
@@ -100,23 +111,26 @@ fn file_report_status_summary(report: &InvestigationReport) -> String {
             .unwrap_or("not checked")
     )];
 
+    let positive_values: std::collections::HashSet<_> = report
+        .provider_lookups
+        .iter()
+        .filter(|lookup| {
+            lookup.subject != LookupSubject::OriginalFileSha256
+                && matches!(
+                    lookup.outcome,
+                    LookupOutcome::Found(_)
+                        | LookupOutcome::ThreatFoxFound { .. }
+                        | LookupOutcome::UrlhausFound { .. }
+                )
+        })
+        .map(|lookup| lookup.queried_hash.as_str())
+        .collect();
     let matched_indicators = report
         .local_inspection
         .indicators
         .iter()
-        .filter(|indicator| {
-            report.provider_lookups.iter().any(|lookup| {
-                lookup.subject != LookupSubject::OriginalFileSha256
-                    && lookup.queried_hash == indicator.value
-                    && matches!(
-                        lookup.outcome,
-                        LookupOutcome::Found(_)
-                            | LookupOutcome::ThreatFoxFound { .. }
-                            | LookupOutcome::UrlhausFound { .. }
-                    )
-            })
-        })
         .map(|indicator| indicator.value.as_str())
+        .filter(|value| positive_values.contains(value))
         .collect::<std::collections::HashSet<_>>()
         .len();
     if matched_indicators > 0 {
@@ -291,8 +305,15 @@ pub(super) fn session_check_screen(report: &SessionReport, check_index: usize) {
         SessionCheck::FileInvestigation { report } => {
             tui::section("FILE INVESTIGATION");
             tui::field("Filename", terminal_safe(&report.file.filename));
-            tui::field("SHA-256", &report.file.sha256);
+            if report.identity_incomplete() {
+                tui::field("Incomplete digest", &report.file.sha256);
+            } else {
+                tui::field("SHA-256", &report.file.sha256);
+            }
             render_provider_outcomes(&report.provider_lookups);
+            for line in report.to_markdown().lines() {
+                tui::box_line(line);
+            }
         }
         SessionCheck::IndicatorLookup {
             indicator,
@@ -302,6 +323,13 @@ pub(super) fn session_check_screen(report: &SessionReport, check_index: usize) {
             tui::field("Type", indicator.indicator_type.as_str());
             tui::field("Value", terminal_safe(&indicator.value));
             render_provider_outcomes(provider_lookups);
+            for lookup in provider_lookups {
+                crate::app::provider_views::display_value_lookup_details(
+                    &lookup.provider,
+                    &lookup.queried_hash,
+                    &lookup.outcome,
+                );
+            }
         }
     }
     tui::note("NOT FOUND means no matching record was returned; it is not a safety verdict.");
@@ -366,7 +394,9 @@ fn comparison_screen_at_height(
     );
     hash_field("Older SHA-256", &older.file.sha256);
     hash_field("Newer SHA-256", &newer.file.sha256);
-    if !comparison.same_subject {
+    if older.identity_incomplete() || newer.identity_incomplete() {
+        tui::warning("File identity is incomplete. Findings cannot be compared.");
+    } else if !comparison.same_subject {
         tui::status(
             "File identity",
             "Different file contents — findings not compared",
@@ -416,7 +446,9 @@ fn compact_comparison_screen(
     );
     hash_field("Older SHA-256", &older.file.sha256);
     hash_field("Newer SHA-256", &newer.file.sha256);
-    if comparison.same_subject {
+    if older.identity_incomplete() || newer.identity_incomplete() {
+        tui::warning("File identity is incomplete. Findings cannot be compared.");
+    } else if comparison.same_subject {
         tui::status(
             "File identity",
             "Same SHA-256 — recorded evidence can be compared",
@@ -650,9 +682,11 @@ mod tests {
 
         let collection = ReportCollection {
             reports: (1..=3)
-                .map(|index| SavedReport {
+                .map(|index| ReportIndexEntry {
                     path: PathBuf::from(format!("reports/session-{index}.json")),
-                    contents: SavedReportContents::Session(SessionReport::new(Vec::new())),
+                    timestamp: 0,
+                    title: format!("Session · session-{index}.json"),
+                    description: "Completed checks".into(),
                 })
                 .collect(),
             unavailable: Vec::new(),
